@@ -1,0 +1,129 @@
+﻿<div id="prompt_regen_settings" class="extension_settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>Prompt Regenerator</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <!-- Prompt Settings -->
+            <div class="marginBot10">
+                <label for="prompt_regen_identifier" class="checkbox_label">
+                    <span>Prompt Identifier/Name</span>
+                </label>
+                <input id="prompt_regen_identifier" class="text_pole" type="text" value="Infoblock_generated" placeholder="Infoblock_generated" />
+                <small class="notes">The identifier or name of the Chat Completion Preset prompt to regenerate</small>
+            </div>
+
+            <!-- LLM Prompt Template -->
+            <div class="marginBot10">
+                <label for="prompt_regen_template" class="checkbox_label">
+                    <span>LLM Prompt Template</span>
+                </label>
+                <textarea id="prompt_regen_template" class="textarea_compact" rows="6" placeholder="Enter your prompt template...">Generate an updated version based on the conversation: {all_messages}</textarea>
+
+                <div class="note">
+                    <div class="m-b-1">
+                        <strong>📝 Message Tags:</strong>
+                        <div class="tags-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; font-family: monospace; font-size: 11px;">
+                            <div><code>{all_messages}</code> - All visible messages</div>
+                            <div><code>{message_last}</code> - Only the last message</div>
+                        </div>
+                    </div>
+
+                    <div class="m-b-1">
+                        <strong>🏗️ Structured Format:</strong>
+                        <div style="margin: 8px 0; font-family: monospace; font-size: 11px; background: #f8f9fa; padding: 8px; border-radius: 4px;">
+                            <div><code>[system]Instructions here[/system]</code></div>
+                            <div><code>[user]User content with {all_messages}[/user]</code></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Generation Options -->
+            <div class="title_restorable">
+                <h4>Generation Options</h4>
+            </div>
+
+            <div class="marginBot5">
+                <label class="checkbox_label" for="prompt_regen_use_raw">
+                    <input id="prompt_regen_use_raw" type="checkbox" />
+                    <span>Use Raw Generation</span>
+                </label>
+                <small class="notes">Bypass system instructions for direct LLM access</small>
+            </div>
+
+            <div class="marginBot5">
+                <label class="checkbox_label" for="prompt_regen_use_custom_generate_raw">
+                    <input id="prompt_regen_use_custom_generate_raw" type="checkbox" />
+                    <span>Use Custom Raw Generation Method</span>
+                </label>
+                <small class="notes">Custom method with stopping strings (requires custom.js)</small>
+            </div>
+
+            <div class="marginBot10">
+                <label for="prompt_regen_message_count" class="checkbox_label">
+                    <span>Messages to Include</span>
+                </label>
+                <input id="prompt_regen_message_count" class="text_pole" type="number" min="0" max="50" value="5" />
+                <small class="notes">Number of recent messages to include (0 = all messages)</small>
+            </div>
+
+            <div class="marginBot5">
+                <label for="prompt_regen_custom_model" class="checkbox_label">
+                    <span>Custom Model (Optional)</span>
+                </label>
+                <input id="prompt_regen_custom_model" class="text_pole" type="text" value="" placeholder="Leave blank to use current" />
+                <small class="notes">Override model for generation (leave blank to use current)</small>
+            </div>
+
+            <div class="marginBot10">
+                <label for="prompt_regen_custom_parameters" class="checkbox_label">
+                    <span>Custom Parameters (Optional)</span>
+                </label>
+                <input id="prompt_regen_custom_parameters" class="text_pole" type="text" value="" placeholder="Leave blank to use current" />
+                <small class="notes">Override parameters (leave blank to use current)</small>
+            </div>
+
+            <!-- Auto-Trigger Settings -->
+            <div class="title_restorable">
+                <h4>Auto-Trigger Settings</h4>
+            </div>
+
+            <div class="marginBot5">
+                <label class="checkbox_label" for="prompt_regen_auto_trigger">
+                    <input id="prompt_regen_auto_trigger" type="checkbox" />
+                    <span>Enable Auto-Trigger</span>
+                </label>
+                <small class="notes">Automatically regenerate prompt after messages</small>
+            </div>
+
+            <div class="marginBot10">
+                <label for="prompt_regen_trigger_interval" class="checkbox_label">
+                    <span>Trigger Interval</span>
+                </label>
+                <input id="prompt_regen_trigger_interval" class="text_pole" type="number" min="0" max="100" value="0" />
+                <small class="notes">Regenerate every X messages (0 = after every message)</small>
+            </div>
+
+            <!-- Preview Options -->
+            <div class="title_restorable">
+                <h4>Preview Options</h4>
+            </div>
+
+            <div class="marginBot10">
+                <label class="checkbox_label" for="prompt_regen_show_preview">
+                    <input id="prompt_regen_show_preview" type="checkbox" checked />
+                    <span>Show Preview Modal</span>
+                </label>
+                <small class="notes">Display a preview window before applying changes</small>
+            </div>
+
+            <!-- Usage Info -->
+            <div class="title_restorable">
+                <h4>How to Use</h4>
+            </div>
+
+            <div class="marginBot10">
+                <div class="notes" style="background: #f8f9fa; padding: 12px; border-radius: 4px; border-left: 4px solid #007bff;">
+                    <div style="margin-bottom: 8px;"><strong>1.
