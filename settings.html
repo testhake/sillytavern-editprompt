@@ -5,44 +5,54 @@
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-            <!-- Prompt Settings -->
-            <div class="marginBot10">
-                <label for="prompt_regen_identifier" class="checkbox_label">
-                    <span>Prompt Identifier/Name</span>
-                </label>
-                <input id="prompt_regen_identifier" class="text_pole" type="text" value="Infoblock_generated" placeholder="Infoblock_generated" />
-                <small class="notes">The identifier or name of the Chat Completion Preset prompt to regenerate</small>
+
+            <!-- Target Prompt Settings -->
+            <div class="title_restorable">
+                <h4>Target Prompt</h4>
             </div>
 
-            <!-- LLM Prompt Template -->
             <div class="marginBot10">
-                <label for="prompt_regen_template" class="checkbox_label">
+                <label for="prompt_regen_target_name" class="checkbox_label">
+                    <span>Prompt Name</span>
+                </label>
+                <input id="prompt_regen_target_name" class="text_pole" type="text" value="Infoblock_generated" placeholder="e.g., Infoblock_generated" />
+                <small class="notes">The name of the Chat Completion prompt to regenerate (must exist in your current preset)</small>
+            </div>
+
+            <!-- Generation Template -->
+            <div class="title_restorable">
+                <h4>Generation Settings</h4>
+            </div>
+
+            <div class="marginBot10">
+                <label for="prompt_regen_llm_template" class="checkbox_label">
                     <span>LLM Prompt Template</span>
                 </label>
-                <textarea id="prompt_regen_template" class="textarea_compact" rows="6" placeholder="Enter your prompt template...">Generate an updated version based on the conversation: {all_messages}</textarea>
+                <textarea id="prompt_regen_llm_template" class="textarea_compact" rows="6" placeholder="Enter your template...">Based on the following conversation, generate a new information block that summarizes the key details:
 
+{all_messages}
+
+Provide a concise, structured summary:</textarea>
                 <div class="note">
                     <div class="m-b-1">
-                        <strong>📝 Message Tags:</strong>
-                        <div class="tags-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; font-family: monospace; font-size: 11px;">
+                        <strong>📝 Available Tags:</strong>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; font-family: monospace; font-size: 11px;">
                             <div><code>{all_messages}</code> - All visible messages</div>
                             <div><code>{message_last}</code> - Only the last message</div>
                         </div>
                     </div>
-
-                    <div class="m-b-1">
-                        <strong>🏗️ Structured Format:</strong>
-                        <div style="margin: 8px 0; font-family: monospace; font-size: 11px; background: #f8f9fa; padding: 8px; border-radius: 4px;">
-                            <div><code>[system]Instructions here[/system]</code></div>
-                            <div><code>[user]User content with {all_messages}[/user]</code></div>
-                        </div>
+                    <div>
+                        <strong>💡 Tip:</strong> The generated text will replace the content of your target prompt.
                     </div>
                 </div>
             </div>
 
-            <!-- Generation Options -->
-            <div class="title_restorable">
-                <h4>Generation Options</h4>
+            <div class="marginBot10">
+                <label for="prompt_regen_message_count" class="checkbox_label">
+                    <span>Messages to Include</span>
+                </label>
+                <input id="prompt_regen_message_count" class="text_pole" type="number" min="0" max="50" value="5" />
+                <small class="notes">Number of recent visible messages to include (0 = all messages)</small>
             </div>
 
             <div class="marginBot5">
@@ -53,77 +63,68 @@
                 <small class="notes">Bypass system instructions for direct LLM access</small>
             </div>
 
-            <div class="marginBot5">
-                <label class="checkbox_label" for="prompt_regen_use_custom_generate_raw">
-                    <input id="prompt_regen_use_custom_generate_raw" type="checkbox" />
-                    <span>Use Custom Raw Generation Method</span>
-                </label>
-                <small class="notes">Custom method with stopping strings (requires custom.js)</small>
-            </div>
-
-            <div class="marginBot10">
-                <label for="prompt_regen_message_count" class="checkbox_label">
-                    <span>Messages to Include</span>
-                </label>
-                <input id="prompt_regen_message_count" class="text_pole" type="number" min="0" max="50" value="5" />
-                <small class="notes">Number of recent messages to include (0 = all messages)</small>
-            </div>
-
+            <!-- Model Override -->
             <div class="marginBot5">
                 <label for="prompt_regen_custom_model" class="checkbox_label">
                     <span>Custom Model (Optional)</span>
                 </label>
-                <input id="prompt_regen_custom_model" class="text_pole" type="text" value="" placeholder="Leave blank to use current" />
-                <small class="notes">Override model for generation (leave blank to use current)</small>
+                <input id="prompt_regen_custom_model" class="text_pole" type="text" value="" placeholder="Leave blank to use current model" />
+                <small class="notes">Override the model for prompt generation (leave blank to use current)</small>
             </div>
 
             <div class="marginBot10">
-                <label for="prompt_regen_custom_parameters" class="checkbox_label">
+                <label for="prompt_regen_custom_params" class="checkbox_label">
                     <span>Custom Parameters (Optional)</span>
                 </label>
-                <input id="prompt_regen_custom_parameters" class="text_pole" type="text" value="" placeholder="Leave blank to use current" />
-                <small class="notes">Override parameters (leave blank to use current)</small>
+                <input id="prompt_regen_custom_params" class="text_pole" type="text" value="" placeholder="Leave blank to use current parameters" />
+                <small class="notes">Custom generation parameters (leave blank to use current)</small>
             </div>
 
-            <!-- Auto-Trigger Settings -->
+            <!-- Auto-Generation -->
             <div class="title_restorable">
-                <h4>Auto-Trigger Settings</h4>
+                <h4>Auto-Generation</h4>
             </div>
 
             <div class="marginBot5">
-                <label class="checkbox_label" for="prompt_regen_auto_trigger">
-                    <input id="prompt_regen_auto_trigger" type="checkbox" />
-                    <span>Enable Auto-Trigger</span>
+                <label class="checkbox_label" for="prompt_regen_auto_generate">
+                    <input id="prompt_regen_auto_generate" type="checkbox" />
+                    <span>Enable Auto-Generation</span>
                 </label>
-                <small class="notes">Automatically regenerate prompt after messages</small>
+                <small class="notes">Automatically regenerate prompt after new messages</small>
             </div>
 
             <div class="marginBot10">
-                <label for="prompt_regen_trigger_interval" class="checkbox_label">
-                    <span>Trigger Interval</span>
+                <label for="prompt_regen_auto_freq" class="checkbox_label">
+                    <span>Generation Frequency</span>
                 </label>
-                <input id="prompt_regen_trigger_interval" class="text_pole" type="number" min="0" max="100" value="0" />
-                <small class="notes">Regenerate every X messages (0 = after every message)</small>
+                <input id="prompt_regen_auto_freq" class="text_pole" type="number" min="1" max="20" value="1" />
+                <small class="notes">Regenerate every X messages (1 = every message, 2 = every 2 messages, etc.)</small>
             </div>
 
-            <!-- Preview Options -->
+            <!-- UI Options -->
             <div class="title_restorable">
-                <h4>Preview Options</h4>
+                <h4>Display Options</h4>
             </div>
 
             <div class="marginBot10">
-                <label class="checkbox_label" for="prompt_regen_show_preview">
-                    <input id="prompt_regen_show_preview" type="checkbox" checked />
-                    <span>Show Preview Modal</span>
+                <label class="checkbox_label" for="prompt_regen_show_window">
+                    <input id="prompt_regen_show_window" type="checkbox" checked />
+                    <span>Show Floating Window</span>
                 </label>
-                <small class="notes">Display a preview window before applying changes</small>
+                <small class="notes">Display a draggable window showing the generated prompt and status</small>
             </div>
 
-            <!-- Usage Info -->
-            <div class="title_restorable">
-                <h4>How to Use</h4>
-            </div>
-
+            <!-- Usage Instructions -->
             <div class="marginBot10">
                 <div class="notes" style="background: #f8f9fa; padding: 12px; border-radius: 4px; border-left: 4px solid #007bff;">
-                    <div style="margin-bottom: 8px;"><strong>1.
+                    <div style="margin-bottom: 8px;"><strong>🎯 How to Use:</strong></div>
+                    <div style="margin-bottom: 6px;">1. Set the name of the prompt you want to regenerate (must exist in your Chat Completion preset)</div>
+                    <div style="margin-bottom: 6px;">2. Configure the LLM template that will generate the new prompt content</div>
+                    <div style="margin-bottom: 6px;">3. Click the regenerate button or enable auto-generation</div>
+                    <div>4. The generated content will replace your target prompt's content</div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</div>
