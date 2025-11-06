@@ -58,6 +58,21 @@ async function loadSettings() {
     if (settings.show_monitor !== false) {
         showPromptMonitor();
     }
+
+    setTimeout(() => {
+        const promptCollection = power_user?.prompt_manager?.prompts;
+        if (promptCollection && Array.isArray(promptCollection)) {
+            console.log(`[${MODULE_NAME}] Available prompts:`,
+                promptCollection.map(p => ({ name: p?.name, identifier: p?.identifier })));
+        } else {
+            console.warn(`[${MODULE_NAME}] Could not access prompt collection. Structure:`, {
+                power_user_exists: !!power_user,
+                prompt_manager_exists: !!power_user?.prompt_manager,
+                prompts_type: typeof power_user?.prompt_manager?.prompts,
+                prompts_is_array: Array.isArray(power_user?.prompt_manager?.prompts)
+            });
+        }
+    }, 1000);
 }
 
 function onInput(event) {
@@ -91,26 +106,30 @@ function onInput(event) {
 
 function getPromptByName(promptName) {
     try {
-        // Access prompt manager from power_user
-        const prompts = power_user?.prompts;
+        // Access prompt collection from power_user
+        const promptCollection = power_user?.prompt_manager?.prompts;
 
-        if (!prompts || typeof prompts !== 'object') {
-            console.warn(`[${MODULE_NAME}] Prompt manager not accessible`);
+        if (!promptCollection || !Array.isArray(promptCollection)) {
+            console.warn(`[${MODULE_NAME}] Prompt collection not accessible. power_user.prompt_manager.prompts:`, power_user?.prompt_manager);
             return null;
         }
 
-        // Search through prompts to find matching name
-        for (const [identifier, promptData] of Object.entries(prompts)) {
-            if (promptData && promptData.name === promptName) {
-                return {
-                    identifier: identifier,
-                    content: promptData.content || '',
-                    promptData: promptData
-                };
-            }
+        console.log(`[${MODULE_NAME}] Searching for prompt "${promptName}" in ${promptCollection.length} prompts`);
+
+        // Search through prompts array to find matching name
+        const prompt = promptCollection.find(p => p && p.name === promptName);
+
+        if (prompt) {
+            console.log(`[${MODULE_NAME}] Found prompt:`, prompt);
+            return {
+                identifier: prompt.identifier,
+                content: prompt.content || '',
+                promptData: prompt
+            };
         }
 
-        console.warn(`[] Prompt "${promptName}" not found`);
+        console.warn(`[${MODULE_NAME}] Prompt "${promptName}" not found. Available prompts:`,
+            promptCollection.map(p => p?.name).filter(Boolean));
         return null;
     } catch (error) {
         console.error(`[${MODULE_NAME}] Error accessing prompts:`, error);
@@ -120,32 +139,38 @@ function getPromptByName(promptName) {
 
 function updatePromptContent(promptName, newContent) {
     try {
-        const prompts = power_user?.prompts;
+        const promptCollection = power_user?.prompt_manager?.prompts;
 
-        if (!prompts) {
-            throw new Error(`[${MODULE_NAME}] Prompt manager not accessible`);
+        if (!promptCollection || !Array.isArray(promptCollection)) {
+            throw new Error('Prompt collection not accessible');
         }
 
-        // Find and update the prompt
-        for (const [identifier, promptData] of Object.entries(prompts)) {
-            if (promptData && promptData.name === promptName) {
-                promptData.content = newContent;
+        // Find the prompt in the array
+        const prompt = promptCollection.find(p => p && p.name === promptName);
 
-                // Save to settings
-                power_user.prompts = prompts;
-                eventSource.emit(event_types.SETTINGS_UPDATED);
-
-                console.log(`[${MODULE_NAME}] Updated prompt "${promptName}"`);
-                return true;
-            }
+        if (!prompt) {
+            throw new Error(`Prompt "${promptName}" not found`);
         }
 
-        throw new Error(`[${MODULE_NAME}] Prompt "${promptName}" not found`);
+        // Update the content
+        prompt.content = newContent;
+
+        // Trigger save through prompt manager if available
+        if (power_user.prompt_manager && typeof power_user.prompt_manager.savePrompts === 'function') {
+            power_user.prompt_manager.savePrompts();
+        } else {
+            // Fallback: emit settings update event
+            eventSource.emit(event_types.SETTINGS_UPDATED);
+        }
+
+        console.log(`[${MODULE_NAME}] Updated prompt "${promptName}" with ${newContent.length} characters`);
+        return true;
     } catch (error) {
         console.error(`[${MODULE_NAME}] Error updating prompt:`, error);
         throw error;
     }
 }
+
 
 function showPromptMonitor() {
     if (promptMonitorWindow) {
