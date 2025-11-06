@@ -60,14 +60,16 @@ async function loadSettings() {
     }
 
     setTimeout(() => {
-        const promptCollection = power_user?.instruct;
+        const context = getContext();
+        const promptCollection = context.oai_settings.preset_settings_openai;
         if (promptCollection && Array.isArray(promptCollection)) {
             console.log(`[${MODULE_NAME}] Available prompts:`,
                 promptCollection.map(p => ({ name: p?.name, identifier: p?.identifier })));
         } else {
             console.warn(`[${MODULE_NAME}] Could not access prompt collection. Structure:`, {
-                power_user_exists: !!power_user,
-                prompt_manager_exists: !!power_user?.instruct,
+                context_oai_settings_exists: !!context.oai_settings,
+                prompts_type: typeof context.oai_settings.preset_settings_openai,
+                prompts_is_array: Array.isArray(context.oai_settings.preset_settings_openai)
             });
         }
     }, 1000);
@@ -105,10 +107,10 @@ function onInput(event) {
 function getPromptByName(promptName) {
     try {
         // Access prompt collection from power_user
-        const promptCollection = power_user?.instruct;
+        const promptCollection = power_user?.prompt_manager?.prompts;
 
         if (!promptCollection || !Array.isArray(promptCollection)) {
-            console.warn(`[${MODULE_NAME}] Prompt collection not accessible. power_user.instruct:`, power_user?.instruct);
+            console.warn(`[${MODULE_NAME}] Prompt collection not accessible. power_user.prompt_manager.prompts:`, power_user?.prompt_manager);
             return null;
         }
 
@@ -137,7 +139,7 @@ function getPromptByName(promptName) {
 
 function updatePromptContent(promptName, newContent) {
     try {
-        const promptCollection = power_user?.instruct;
+        const promptCollection = power_user?.prompt_manager?.prompts;
 
         if (!promptCollection || !Array.isArray(promptCollection)) {
             throw new Error('Prompt collection not accessible');
