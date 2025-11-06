@@ -1,128 +1,133 @@
-﻿<div id="prompt_regen_settings" class="extension_settings">
+﻿<div id="dpm_settings" class="extension_settings">
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>Prompt Regenerator</b>
+            <b>Dynamic Prompt Modifier</b>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
-
-            <!-- Target Prompt Settings -->
-            <div class="title_restorable">
-                <h4>Target Prompt</h4>
-            </div>
-
+            <!-- Target Prompt -->
             <div class="marginBot10">
-                <label for="prompt_regen_target_name" class="checkbox_label">
-                    <span>Prompt Name</span>
+                <label for="dpm_prompt_name" class="checkbox_label">
+                    <span>Target Prompt Name</span>
                 </label>
-                <input id="prompt_regen_target_name" class="text_pole" type="text" value="Infoblock_generated" placeholder="e.g., Infoblock_generated" />
-                <small class="notes">The name of the Chat Completion prompt to regenerate (must exist in your current preset)</small>
+                <input id="dpm_prompt_name" class="text_pole" type="text" value="Main Prompt" placeholder="Main Prompt" />
+                <small class="notes">Name of the prompt from Chat Completion Presets to modify</small>
             </div>
 
-            <!-- Generation Template -->
-            <div class="title_restorable">
-                <h4>Generation Settings</h4>
-            </div>
-
+            <!-- LLM Prompt Template -->
             <div class="marginBot10">
-                <label for="prompt_regen_llm_template" class="checkbox_label">
+                <label for="dpm_llm_prompt" class="checkbox_label">
                     <span>LLM Prompt Template</span>
                 </label>
-                <textarea id="prompt_regen_llm_template" class="textarea_compact" rows="6" placeholder="Enter your template...">Based on the following conversation, generate a new information block that summarizes the key details:
+                <textarea id="dpm_llm_prompt" class="textarea_compact" rows="8" placeholder="Enter your prompt template...">[system]You are an expert at creating concise writing instructions.[/system]
+[user]Based on this conversation: {all_messages}
+Create a brief instruction that captures the writing style and tone.[/user]</textarea>
 
-{all_messages}
-
-Provide a concise, structured summary:</textarea>
                 <div class="note">
                     <div class="m-b-1">
-                        <strong>📝 Available Tags:</strong>
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; font-family: monospace; font-size: 11px;">
+                        <strong>📝 Message Tags:</strong>
+                        <div class="tags-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; font-family: monospace; font-size: 11px;">
                             <div><code>{all_messages}</code> - All visible messages</div>
+                            <div><code>{previous_messages}</code> - All but last message</div>
+                            <div><code>{previous_messages2}</code> - All but last 2 messages</div>
                             <div><code>{message_last}</code> - Only the last message</div>
+                            <div><code>{message_beforelast}</code> - Message before last</div>
+                            <div><code>{prompt}</code> - Current prompt content</div>
                         </div>
                     </div>
-                    <div>
-                        <strong>💡 Tip:</strong> The generated text will replace the content of your target prompt.
+
+                    <div class="m-b-1">
+                        <strong>🏗️ Structured Format:</strong>
+                        <div style="margin: 8px 0; font-family: monospace; font-size: 11px; background: #f8f9fa; padding: 8px; border-radius: 4px;">
+                            <div><code>[system]Instructions here[/system]</code></div>
+                            <div><code>[user]User content with {all_messages}[/user]</code></div>
+                            <div><code>[assistant]Assistant content[/assistant]</code></div>
+                        </div>
                     </div>
                 </div>
             </div>
 
+            <!-- Generation Options -->
+            <div class="title_restorable">
+                <h4>Generation Options</h4>
+            </div>
+
+            <div class="marginBot5">
+                <label class="checkbox_label" for="dpm_use_raw">
+                    <input id="dpm_use_raw" type="checkbox" />
+                    <span>Use Raw Generation</span>
+                </label>
+                <small class="notes">Bypass system instructions and character card for direct LLM access</small>
+            </div>
+
+            <div class="marginBot5">
+                <label class="checkbox_label" for="dpm_use_custom_generate_raw">
+                    <input id="dpm_use_custom_generate_raw" type="checkbox" />
+                    <span>Use Custom Raw Generation Method</span>
+                </label>
+                <small class="notes">Custom Raw Generation Method with stopping strings</small>
+            </div>
+
+            <div class="marginBot5">
+                <label for="dpm_custom_model" class="checkbox_label">
+                    <span>Custom Model (Optional)</span>
+                </label>
+                <input id="dpm_custom_model" class="text_pole" type="text" value="" placeholder="Leave blank to use current model" />
+                <small class="notes">Override model for this extension only</small>
+            </div>
+
+            <div class="marginBot5">
+                <label for="dpm_custom_parameters" class="checkbox_label">
+                    <span>Custom Parameters (Optional)</span>
+                </label>
+                <input id="dpm_custom_parameters" class="text_pole" type="text" value="" placeholder="Leave blank to use current parameters" />
+                <small class="notes">Override parameters for this extension only</small>
+            </div>
+
             <div class="marginBot10">
-                <label for="prompt_regen_message_count" class="checkbox_label">
+                <label for="dpm_message_count" class="checkbox_label">
                     <span>Messages to Include</span>
                 </label>
-                <input id="prompt_regen_message_count" class="text_pole" type="number" min="0" max="50" value="5" />
+                <input id="dpm_message_count" class="text_pole" type="number" min="0" max="50" value="5" />
                 <small class="notes">Number of recent visible messages to include (0 = all messages)</small>
             </div>
 
-            <div class="marginBot5">
-                <label class="checkbox_label" for="prompt_regen_use_raw">
-                    <input id="prompt_regen_use_raw" type="checkbox" />
-                    <span>Use Raw Generation</span>
-                </label>
-                <small class="notes">Bypass system instructions for direct LLM access</small>
-            </div>
-
-            <!-- Model Override -->
-            <div class="marginBot5">
-                <label for="prompt_regen_custom_model" class="checkbox_label">
-                    <span>Custom Model (Optional)</span>
-                </label>
-                <input id="prompt_regen_custom_model" class="text_pole" type="text" value="" placeholder="Leave blank to use current model" />
-                <small class="notes">Override the model for prompt generation (leave blank to use current)</small>
-            </div>
-
-            <div class="marginBot10">
-                <label for="prompt_regen_custom_params" class="checkbox_label">
-                    <span>Custom Parameters (Optional)</span>
-                </label>
-                <input id="prompt_regen_custom_params" class="text_pole" type="text" value="" placeholder="Leave blank to use current parameters" />
-                <small class="notes">Custom generation parameters (leave blank to use current)</small>
-            </div>
-
-            <!-- Auto-Generation -->
+            <!-- Trigger Mode -->
             <div class="title_restorable">
-                <h4>Auto-Generation</h4>
+                <h4>Trigger Mode</h4>
+            </div>
+
+            <div class="marginBot10">
+                <label for="dpm_trigger_mode" class="checkbox_label">
+                    <span>When to Update Prompt</span>
+                </label>
+                <select id="dpm_trigger_mode" class="text_pole">
+                    <option value="manual">Manual (button only)</option>
+                    <option value="every_message">After every character message</option>
+                    <option value="interval">Every X character messages</option>
+                </select>
+                <small class="notes">Choose when the prompt should be automatically updated</small>
+            </div>
+
+            <div class="marginBot10" id="dpm_interval_container">
+                <label for="dpm_message_interval" class="checkbox_label">
+                    <span>Message Interval</span>
+                </label>
+                <input id="dpm_message_interval" class="text_pole" type="number" min="1" max="20" value="3" />
+                <small class="notes">Update prompt after this many character messages (only for interval mode)</small>
+            </div>
+
+            <!-- Monitor Options -->
+            <div class="title_restorable">
+                <h4>Monitor Options</h4>
             </div>
 
             <div class="marginBot5">
-                <label class="checkbox_label" for="prompt_regen_auto_generate">
-                    <input id="prompt_regen_auto_generate" type="checkbox" />
-                    <span>Enable Auto-Generation</span>
+                <label class="checkbox_label" for="dpm_show_monitor">
+                    <input id="dpm_show_monitor" type="checkbox" checked />
+                    <span>Show Prompt Monitor Window</span>
                 </label>
-                <small class="notes">Automatically regenerate prompt after new messages</small>
-            </div>
-
-            <div class="marginBot10">
-                <label for="prompt_regen_auto_freq" class="checkbox_label">
-                    <span>Generation Frequency</span>
-                </label>
-                <input id="prompt_regen_auto_freq" class="text_pole" type="number" min="1" max="20" value="1" />
-                <small class="notes">Regenerate every X messages (1 = every message, 2 = every 2 messages, etc.)</small>
-            </div>
-
-            <!-- UI Options -->
-            <div class="title_restorable">
-                <h4>Display Options</h4>
-            </div>
-
-            <div class="marginBot10">
-                <label class="checkbox_label" for="prompt_regen_show_window">
-                    <input id="prompt_regen_show_window" type="checkbox" checked />
-                    <span>Show Floating Window</span>
-                </label>
-                <small class="notes">Display a draggable window showing the generated prompt and status</small>
-            </div>
-
-            <!-- Usage Instructions -->
-            <div class="marginBot10">
-                <div class="notes" style="background: #f8f9fa; padding: 12px; border-radius: 4px; border-left: 4px solid #007bff;">
-                    <div style="margin-bottom: 8px;"><strong>🎯 How to Use:</strong></div>
-                    <div style="margin-bottom: 6px;">1. Set the name of the prompt you want to regenerate (must exist in your Chat Completion preset)</div>
-                    <div style="margin-bottom: 6px;">2. Configure the LLM template that will generate the new prompt content</div>
-                    <div style="margin-bottom: 6px;">3. Click the regenerate button or enable auto-generation</div>
-                    <div>4. The generated content will replace your target prompt's content</div>
-                </div>
+                <small class="notes">Display a floating window showing the current prompt content in real-time</small>
             </div>
 
         </div>
