@@ -89,78 +89,60 @@ function onInput(event) {
     saveSettingsDebounced();
 }
 
-// AFTER:
 function getPromptByName(promptName) {
     try {
-        // Access prompts from context
-        const context = getContext();
+        // Access prompt manager from power_user
+        const prompts = power_user?.prompts;
 
-        // Try power_user.prompts first
-        if (power_user && power_user.prompts) {
-            for (const [identifier, promptData] of Object.entries(power_user.prompts)) {
-                if (promptData && promptData.name === promptName) {
-                    return {
-                        identifier: identifier,
-                        content: promptData.content || '',
-                        promptData: promptData
-                    };
-                }
+        if (!prompts || typeof prompts !== 'object') {
+            console.warn(`[${MODULE_NAME}] Prompt manager not accessible`);
+            return null;
+        }
+
+        // Search through prompts to find matching name
+        for (const [identifier, promptData] of Object.entries(prompts)) {
+            if (promptData && promptData.name === promptName) {
+                return {
+                    identifier: identifier,
+                    content: promptData.content || '',
+                    promptData: promptData
+                };
             }
         }
 
-        // Fallback: try accessing via context.prompts if available
-        if (context && context.prompts) {
-            for (const [identifier, promptData] of Object.entries(context.prompts)) {
-                if (promptData && promptData.name === promptName) {
-                    return {
-                        identifier: identifier,
-                        content: promptData.content || '',
-                        promptData: promptData
-                    };
-                }
-            }
-        }
-
-        console.warn(`[dynamic-prompt-modifier] Prompt "${promptName}" not found. Available prompts:`,
-            power_user?.prompts ? Object.keys(power_user.prompts).map(k => power_user.prompts[k]?.name) : 'none');
+        console.warn(`[] Prompt "${promptName}" not found`);
         return null;
     } catch (error) {
-        console.error('[dynamic-prompt-modifier] Error accessing prompts:', error);
+        console.error(`[${MODULE_NAME}] Error accessing prompts:`, error);
         return null;
     }
 }
 
 function updatePromptContent(promptName, newContent) {
     try {
-        if (!power_user || !power_user.prompts) {
-            throw new Error('Prompt manager not accessible. Make sure you have chat completion presets configured.');
+        const prompts = power_user?.prompts;
+
+        if (!prompts) {
+            throw new Error('Prompt manager not accessible');
         }
 
         // Find and update the prompt
-        let updated = false;
-        for (const [identifier, promptData] of Object.entries(power_user.prompts)) {
+        for (const [identifier, promptData] of Object.entries(prompts)) {
             if (promptData && promptData.name === promptName) {
-                // Update the content directly
-                power_user.prompts[identifier].content = newContent;
-                updated = true;
-                break;
+                promptData.content = newContent;
+
+                // Save to settings
+                power_user.prompts = prompts;
+                eventSource.emit(event_types.SETTINGS_UPDATED);
+
+                console.log(`[${MODULE_NAME}] Updated prompt "${promptName}"`);
+                return true;
             }
         }
 
-        if (!updated) {
-            throw new Error(`Prompt "${promptName}" not found in presets`);
-        }
-
-        // Trigger save
-        eventSource.emit(event_types.SETTINGS_UPDATED);
-
-        // Also try to save settings explicitly
-        saveSettingsDebounced();
-
-        console.log(`[dynamic-prompt-modifier] Updated prompt "${promptName}"`);
-        return true;
+        throw new Error(`Prompt "${promptName}" not found`);
     } catch (error) {
-        console.error('[dynamic-prompt-modifier] Error updating prompt:', error);
+        console.error(`[${MODULE_NAME}] Error updating prompt:`, error);
         throw error;
     }
 }
@@ -295,13 +277,13 @@ function escapeHtml(text) {
 function playNotificationSound() {
     try {
         const audio = new Audio();
-        audio.src = `/scripts/extensions/third-party/${MODULE_NAME}/notification.mp3`;
+        audio.src = `${extensionFolderPath}/notification.mp3`;
         audio.volume = 0.5;
         audio.play().catch(error => {
-            console.log('[dynamic-prompt-modifier] Could not play notification sound:', error);
+            console.log(`[${MODULE_NAME}] Could not play notification sound:`, error);
         });
     } catch (error) {
-        console.log('[dynamic-prompt-modifier] Audio notification failed:', error);
+        console.log(`[${MODULE_NAME}] Audio notification failed:`, error);
     }
 }
 
@@ -510,7 +492,7 @@ async function generateAndUpdatePrompt() {
                         '<END>'
                     ],
                 });
-                console.log('[dynamic-prompt-modifier] generateRawWithStops result:', result);
+                console.log(`[${MODULE_NAME}] generateRawWithStops result:`, result);
                 newPromptContent = result;
             } else {
                 const result = await generateRaw({
@@ -518,12 +500,12 @@ async function generateAndUpdatePrompt() {
                     prompt: prompt,
                     prefill: ''
                 });
-                console.log('[dynamic-prompt-modifier] generateRaw result:', result);
+                console.log(`[${MODULE_NAME}] generateRaw result:`, result);
                 newPromptContent = result;
             }
         } catch (error) {
             const methodName = settings.use_custom_generate_raw ? "generateRawWithStops" : "generateRaw";
-            console.error(`[dynamic-prompt-modifier] ${methodName} failed:`, error);
+            console.error(`[${MODULE_NAME}] ${methodName} failed:`, error);
             throw error;
         }
     } else {
@@ -558,7 +540,7 @@ async function generateAndUpdatePrompt() {
     // Play notification sound
     playNotificationSound();
 
-    console.log(`[dynamic-prompt-modifier] Successfully updated prompt "${promptName}"`);
+    console.log(`[${MODULE_NAME}] Successfully updated prompt "${promptName}"`);
 
     return newPromptContent;
 }
@@ -591,24 +573,24 @@ async function onCharacterMessage(data) {
     }
 
     if (triggerMode === 'every_message') {
-        console.log('[dynamic-prompt-modifier] Triggering on every character message');
+        console.log(`[${MODULE_NAME}] Triggering on every character message`);
         lastProcessedMessageIndex = currentMessageIndex;
 
         try {
             await generateAndUpdatePrompt();
             toastr.success('Prompt updated automatically');
         } catch (error) {
-            console.error('[dynamic-prompt-modifier] Auto-update failed:', error);
+            console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
             toastr.error(`Failed to update prompt: ${error.message}`);
         }
     } else if (triggerMode === 'interval') {
         messageCounter++;
         const interval = settings.message_interval || 3;
 
-        console.log(`[dynamic-prompt-modifier] Message counter: ${messageCounter}/${interval}`);
+        console.log(`[${MODULE_NAME}] Message counter: ${messageCounter}/${interval}`);
 
         if (messageCounter >= interval) {
-            console.log('[dynamic-prompt-modifier] Triggering on message interval');
+            console.log(`[${MODULE_NAME}] Triggering on message interval`);
             messageCounter = 0;
             lastProcessedMessageIndex = currentMessageIndex;
 
@@ -616,7 +598,7 @@ async function onCharacterMessage(data) {
                 await generateAndUpdatePrompt();
                 toastr.success('Prompt updated automatically');
             } catch (error) {
-                console.error('[dynamic-prompt-modifier] Auto-update failed:', error);
+                console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
                 toastr.error(`Failed to update prompt: ${error.message}`);
             }
         }
@@ -625,26 +607,11 @@ async function onCharacterMessage(data) {
 
 jQuery(async () => {
     try {
-        // Load HTML files with full path
-        let settingsHtml, buttonHtml;
-
-        try {
-            settingsHtml = await $.get(`/scripts/extensions/third-party/${MODULE_NAME}/settings.html`);
-        } catch (error) {
-            console.error('[dynamic-prompt-modifier] Failed to load settings.html. Make sure the file exists at:', `/scripts/extensions/third-party/${MODULE_NAME}/settings.html`);
-            throw error;
-        }
-
-        try {
-            buttonHtml = await $.get(`/scripts/extensions/third-party/${MODULE_NAME}/button.html`);
-        } catch (error) {
-            console.error('[dynamic-prompt-modifier] Failed to load button.html. Make sure the file exists at:', `/scripts/extensions/third-party/${MODULE_NAME}/button.html`);
-            throw error;
-        }
-
+        const settingsHtml = await $.get(`${extensionFolderPath}/settings.html`);
         $("#extensions_settings").append(settingsHtml);
         $("#dpm_settings input, #dpm_settings textarea, #dpm_settings select").on("input change", onInput);
 
+        const buttonHtml = await $.get(`${extensionFolderPath}/button.html`);
         $("#send_but").before(buttonHtml);
 
         $("#dpm_generate_button").on("click", async () => {
@@ -653,7 +620,7 @@ jQuery(async () => {
                 await generateAndUpdatePrompt();
                 toastr.success('Prompt updated successfully!');
             } catch (error) {
-                console.error('[dynamic-prompt-modifier] Failed to update prompt:', error);
+                console.error(`[${MODULE_NAME}] Failed to update prompt:`, error);
                 toastr.error(`Failed to update prompt: ${error.message}`);
             }
         });
@@ -664,9 +631,8 @@ jQuery(async () => {
 
         await loadSettings();
 
-        console.log('[dynamic-prompt-modifier] Extension initialized successfully');
+        console.log(`[${MODULE_NAME}] Extension initialized successfully`);
     } catch (error) {
-        console.error('[dynamic-prompt-modifier] Failed to initialize extension:', error);
-        toastr.error(`Dynamic Prompt Modifier failed to initialize: ${error.message}`);
+        console.error(`[${MODULE_NAME}] Failed to initialize extension:`, error);
     }
 });
