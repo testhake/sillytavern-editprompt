@@ -60,7 +60,7 @@ async function loadSettings() {
     }
 
     setTimeout(() => {
-        const context = getContext();
+        const context = SillyTavern.getContext;
         const prompts = context.oai_settings?.prompts;
         if (prompts && Array.isArray(prompts)) {
             console.log(`[${MODULE_NAME}] Available prompts:`,
