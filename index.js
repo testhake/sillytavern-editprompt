@@ -1,5 +1,6 @@
 ﻿import { eventSource, event_types, saveSettingsDebounced, getRequestHeaders, substituteParams } from '../../../../script.js';
 import { getContext, extension_settings } from '../../../extensions.js';
+import { oai_settings } from '../../../openai.js';
 import { generateRaw } from '../../../../script.js';
 import { debounce_timeout } from '../../../constants.js';
 import { generateRawWithStops } from './src/custom.js';
@@ -60,16 +61,15 @@ async function loadSettings() {
     }
 
     setTimeout(() => {
-        const context = SillyTavern.getContext;
-        const prompts = context.oai_settings?.prompts;
+        const prompts = oai_settings?.prompts;
         if (prompts && Array.isArray(prompts)) {
             console.log(`[${MODULE_NAME}] Available prompts:`,
                 prompts.map(p => ({ name: p?.name, identifier: p?.identifier })));
         } else {
             console.warn(`[${MODULE_NAME}] Could not access prompts. Structure:`, {
-                context_oai_settings_exists: !!context.oai_settings,
-                prompts_type: typeof context.oai_settings?.prompts,
-                prompts_is_array: Array.isArray(context.oai_settings?.prompts)
+                oai_settings_exists: !!oai_settings,
+                prompts_type: typeof oai_settings?.prompts,
+                prompts_is_array: Array.isArray(oai_settings?.prompts)
             });
         }
     }, 1000);
@@ -109,10 +109,10 @@ function getPromptByName(promptName) {
         const context = getContext();
 
         // Access prompts from the current oai_settings, not preset_settings_openai
-        const prompts = context.oai_settings?.prompts;
+        const prompts = oai_settings?.prompts;
 
         if (!prompts || !Array.isArray(prompts)) {
-            console.warn(`[${MODULE_NAME}] Prompts array not accessible. oai_settings.prompts:`, context.oai_settings?.prompts);
+            console.warn(`[${MODULE_NAME}] Prompts array not accessible. oai_settings.prompts:`, oai_settings?.prompts);
             return null;
         }
 
@@ -144,7 +144,7 @@ function updatePromptContent(promptName, newContent) {
         const context = getContext();
 
         // Access prompts from current oai_settings
-        const prompts = context.oai_settings?.prompts;
+        const prompts = oai_settings?.prompts;
 
         if (!prompts || !Array.isArray(prompts)) {
             throw new Error('Prompts array not accessible');
@@ -161,10 +161,10 @@ function updatePromptContent(promptName, newContent) {
         prompt.content = newContent;
 
         // Save the entire preset with the updated prompts
-        const presetName = context.oai_settings.preset_settings_openai;
+        const presetName = oai_settings.preset_settings_openai;
 
         // Use the saveOpenAIPreset approach via API
-        return savePresetWithPrompts(presetName, context.oai_settings);
+        return savePresetWithPrompts(presetName, oai_settings);
 
     } catch (error) {
         console.error(`[${MODULE_NAME}] Error updating prompt:`, error);
