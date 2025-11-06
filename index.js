@@ -107,10 +107,10 @@ function onInput(event) {
 function getPromptByName(promptName) {
     try {
         // Access prompt collection from power_user
-        const promptCollection = power_user?.prompt_manager?.prompts;
+        const promptCollection = context.oai_settings.preset_settings_openai;
 
         if (!promptCollection || !Array.isArray(promptCollection)) {
-            console.warn(`[${MODULE_NAME}] Prompt collection not accessible. power_user.prompt_manager.prompts:`, power_user?.prompt_manager);
+            console.warn(`[${MODULE_NAME}] Prompt collection not accessible. context.oai_settings.preset_settings_openai:`, context.oai_settings.preset_settings_openai);
             return null;
         }
 
@@ -139,7 +139,7 @@ function getPromptByName(promptName) {
 
 function updatePromptContent(promptName, newContent) {
     try {
-        const promptCollection = power_user?.prompt_manager?.prompts;
+        const promptCollection = context.oai_settings.preset_settings_openai;
 
         if (!promptCollection || !Array.isArray(promptCollection)) {
             throw new Error('Prompt collection not accessible');
