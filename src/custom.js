@@ -12,19 +12,6 @@ import { novelai_settings, novelai_setting_names, nai_settings, getNovelGenerati
 import { generateHorde } from '../../../../horde.js';
 import { getTextGenGenerationData } from '../../../../textgen-settings.js';
 
-// Add at the beginning of custom.js, after imports
-export function getCustomModel() {
-    const { extension_settings } = require('../../../extensions.js');
-    const settings = extension_settings['dynamic-prompt-modifier'] || {};
-    return settings.custom_model || '';
-}
-
-export function getCustomParameters() {
-    const { extension_settings } = require('../../../extensions.js');
-    const settings = extension_settings['dynamic-prompt-modifier'] || {};
-    return settings.custom_parameters || '';
-}
-
 /**
  * Custom OpenAI request function that properly handles stop strings
  * @param {object[]} messages - Array of chat messages

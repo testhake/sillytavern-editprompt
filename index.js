@@ -5,6 +5,20 @@ import { debounce_timeout } from '../../../constants.js';
 import { generateRawWithStops } from './src/custom.js';
 import { power_user } from '../../../power-user.js';
 
+export function getCustomModel() {
+    if (!settings.custom_model) {
+        return '';
+    }
+    return String(settings.custom_model);
+}
+
+export function getCustomParameters() {
+    if (!settings.custom_parameters) {
+        return '';
+    }
+    return String(settings.custom_parameters);
+}
+
 const MODULE_NAME = 'dynamic-prompt-modifier';
 const extensionFolderPath = `scripts/extensions/third-party/${MODULE_NAME}`;
 
