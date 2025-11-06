@@ -60,16 +60,14 @@ async function loadSettings() {
     }
 
     setTimeout(() => {
-        const promptCollection = power_user?.prompt_manager?.prompts;
+        const promptCollection = power_user?.instruct;
         if (promptCollection && Array.isArray(promptCollection)) {
             console.log(`[${MODULE_NAME}] Available prompts:`,
                 promptCollection.map(p => ({ name: p?.name, identifier: p?.identifier })));
         } else {
             console.warn(`[${MODULE_NAME}] Could not access prompt collection. Structure:`, {
                 power_user_exists: !!power_user,
-                prompt_manager_exists: !!power_user?.prompt_manager,
-                prompts_type: typeof power_user?.prompt_manager?.prompts,
-                prompts_is_array: Array.isArray(power_user?.prompt_manager?.prompts)
+                prompt_manager_exists: !!power_user?.instruct,
             });
         }
     }, 1000);
@@ -107,10 +105,10 @@ function onInput(event) {
 function getPromptByName(promptName) {
     try {
         // Access prompt collection from power_user
-        const promptCollection = power_user?.prompt_manager?.prompts;
+        const promptCollection = power_user?.instruct;
 
         if (!promptCollection || !Array.isArray(promptCollection)) {
-            console.warn(`[${MODULE_NAME}] Prompt collection not accessible. power_user.prompt_manager.prompts:`, power_user?.prompt_manager);
+            console.warn(`[${MODULE_NAME}] Prompt collection not accessible. power_user.instruct:`, power_user?.instruct);
             return null;
         }
 
@@ -139,7 +137,7 @@ function getPromptByName(promptName) {
 
 function updatePromptContent(promptName, newContent) {
     try {
-        const promptCollection = power_user?.prompt_manager?.prompts;
+        const promptCollection = power_user?.instruct;
 
         if (!promptCollection || !Array.isArray(promptCollection)) {
             throw new Error('Prompt collection not accessible');
