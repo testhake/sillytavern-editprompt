@@ -123,7 +123,7 @@ function updatePromptContent(promptName, newContent) {
         const prompts = power_user?.prompts;
 
         if (!prompts) {
-            throw new Error('Prompt manager not accessible');
+            throw new Error(`[${MODULE_NAME}] Prompt manager not accessible`);
         }
 
         // Find and update the prompt
@@ -140,7 +140,7 @@ function updatePromptContent(promptName, newContent) {
             }
         }
 
-        throw new Error(`Prompt "${promptName}" not found`);
+        throw new Error(`[${MODULE_NAME}] Prompt "${promptName}" not found`);
     } catch (error) {
         console.error(`[${MODULE_NAME}] Error updating prompt:`, error);
         throw error;
@@ -417,14 +417,14 @@ async function generateAndUpdatePrompt() {
     const chat = context.chat;
 
     if (!Array.isArray(chat) || chat.length === 0) {
-        throw new Error('No chat messages available.');
+        throw new Error(`[${MODULE_NAME}] No chat messages available.`);
     }
 
     const promptName = settings.prompt_name || 'Main Prompt';
     const promptInfo = getPromptByName(promptName);
 
     if (!promptInfo) {
-        throw new Error(`Prompt "${promptName}" not found. Please check the prompt name in settings.`);
+        throw new Error(`[${MODULE_NAME}] Prompt "${promptName}" not found. Please check the prompt name in settings.`);
     }
 
     let newPromptContent;
@@ -434,7 +434,7 @@ async function generateAndUpdatePrompt() {
         const visibleMessages = getVisibleMessages(chat, messageCount);
 
         if (visibleMessages.length === 0) {
-            throw new Error('No visible messages found.');
+            throw new Error(`[${MODULE_NAME}] No visible messages found.`);
         }
 
         const instructionTemplate = settings.llm_prompt || '[system]Create a brief instruction.[/system]\n[user]{all_messages}[/user]';
