@@ -107,6 +107,7 @@ function onInput(event) {
 function getPromptByName(promptName) {
     try {
         // Access prompt collection from power_user
+        const context = getContext();
         const promptCollection = context.oai_settings.preset_settings_openai;
 
         if (!promptCollection || !Array.isArray(promptCollection)) {
@@ -139,6 +140,7 @@ function getPromptByName(promptName) {
 
 function updatePromptContent(promptName, newContent) {
     try {
+        const context = getContext();
         const promptCollection = context.oai_settings.preset_settings_openai;
 
         if (!promptCollection || !Array.isArray(promptCollection)) {
