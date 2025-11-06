@@ -61,15 +61,15 @@ async function loadSettings() {
 
     setTimeout(() => {
         const context = getContext();
-        const promptCollection = context.oai_settings.preset_settings_openai;
-        if (promptCollection && Array.isArray(promptCollection)) {
+        const prompts = context.oai_settings?.prompts;
+        if (prompts && Array.isArray(prompts)) {
             console.log(`[${MODULE_NAME}] Available prompts:`,
-                promptCollection.map(p => ({ name: p?.name, identifier: p?.identifier })));
+                prompts.map(p => ({ name: p?.name, identifier: p?.identifier })));
         } else {
-            console.warn(`[${MODULE_NAME}] Could not access prompt collection. Structure:`, {
+            console.warn(`[${MODULE_NAME}] Could not access prompts. Structure:`, {
                 context_oai_settings_exists: !!context.oai_settings,
-                prompts_type: typeof context.oai_settings.preset_settings_openai,
-                prompts_is_array: Array.isArray(context.oai_settings.preset_settings_openai)
+                prompts_type: typeof context.oai_settings?.prompts,
+                prompts_is_array: Array.isArray(context.oai_settings?.prompts)
             });
         }
     }, 1000);
@@ -106,19 +106,20 @@ function onInput(event) {
 
 function getPromptByName(promptName) {
     try {
-        // Access prompt collection from power_user
         const context = getContext();
-        const promptCollection = context.oai_settings.preset_settings_openai;
 
-        if (!promptCollection || !Array.isArray(promptCollection)) {
-            console.warn(`[${MODULE_NAME}] Prompt collection not accessible. context.oai_settings.preset_settings_openai:`, context.oai_settings.preset_settings_openai);
+        // Access prompts from the current oai_settings, not preset_settings_openai
+        const prompts = context.oai_settings?.prompts;
+
+        if (!prompts || !Array.isArray(prompts)) {
+            console.warn(`[${MODULE_NAME}] Prompts array not accessible. oai_settings.prompts:`, context.oai_settings?.prompts);
             return null;
         }
 
-        console.log(`[${MODULE_NAME}] Searching for prompt "${promptName}" in ${promptCollection.length} prompts`);
+        console.log(`[${MODULE_NAME}] Searching for prompt "${promptName}" in ${prompts.length} prompts`);
 
         // Search through prompts array to find matching name
-        const prompt = promptCollection.find(p => p && p.name === promptName);
+        const prompt = prompts.find(p => p && p.name === promptName);
 
         if (prompt) {
             console.log(`[${MODULE_NAME}] Found prompt:`, prompt);
@@ -130,7 +131,7 @@ function getPromptByName(promptName) {
         }
 
         console.warn(`[${MODULE_NAME}] Prompt "${promptName}" not found. Available prompts:`,
-            promptCollection.map(p => p?.name).filter(Boolean));
+            prompts.map(p => p?.name).filter(Boolean));
         return null;
     } catch (error) {
         console.error(`[${MODULE_NAME}] Error accessing prompts:`, error);
@@ -141,14 +142,16 @@ function getPromptByName(promptName) {
 function updatePromptContent(promptName, newContent) {
     try {
         const context = getContext();
-        const promptCollection = context.oai_settings.preset_settings_openai;
 
-        if (!promptCollection || !Array.isArray(promptCollection)) {
-            throw new Error('Prompt collection not accessible');
+        // Access prompts from current oai_settings
+        const prompts = context.oai_settings?.prompts;
+
+        if (!prompts || !Array.isArray(prompts)) {
+            throw new Error('Prompts array not accessible');
         }
 
         // Find the prompt in the array
-        const prompt = promptCollection.find(p => p && p.name === promptName);
+        const prompt = prompts.find(p => p && p.name === promptName);
 
         if (!prompt) {
             throw new Error(`Prompt "${promptName}" not found`);
@@ -157,18 +160,47 @@ function updatePromptContent(promptName, newContent) {
         // Update the content
         prompt.content = newContent;
 
-        // Trigger save through prompt manager if available
-        if (power_user.prompt_manager && typeof power_user.prompt_manager.savePrompts === 'function') {
-            power_user.prompt_manager.savePrompts();
-        } else {
-            // Fallback: emit settings update event
-            eventSource.emit(event_types.SETTINGS_UPDATED);
-        }
+        // Save the entire preset with the updated prompts
+        const presetName = context.oai_settings.preset_settings_openai;
 
-        console.log(`[${MODULE_NAME}] Updated prompt "${promptName}" with ${newContent.length} characters`);
-        return true;
+        // Use the saveOpenAIPreset approach via API
+        return savePresetWithPrompts(presetName, context.oai_settings);
+
     } catch (error) {
         console.error(`[${MODULE_NAME}] Error updating prompt:`, error);
+        throw error;
+    }
+}
+
+async function savePresetWithPrompts(presetName, settings) {
+    try {
+        const response = await fetch('/api/presets/save', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({
+                apiId: 'openai',
+                name: presetName,
+                preset: {
+                    prompts: settings.prompts,
+                    // Add all other fields from settings as needed
+                    // (refer to the saveOpenAIPreset function you provided)
+                },
+            }),
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to save preset: ${response.status}`);
+        }
+
+        const data = await response.json();
+        console.log(`[${MODULE_NAME}] Successfully saved preset "${presetName}"`);
+
+        // Trigger settings update event to refresh UI
+        eventSource.emit(event_types.SETTINGS_UPDATED);
+
+        return true;
+    } catch (error) {
+        console.error(`[${MODULE_NAME}] Error saving preset:`, error);
         throw error;
     }
 }
