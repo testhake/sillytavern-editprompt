@@ -19,7 +19,7 @@ export function getCustomParameters() {
     return String(settings.custom_parameters);
 }
 
-const MODULE_NAME = 'dynamic-prompt-modifier';
+const MODULE_NAME = 'sillytavern-editprompt';
 const extensionFolderPath = `scripts/extensions/third-party/${MODULE_NAME}`;
 
 let settings = {};
