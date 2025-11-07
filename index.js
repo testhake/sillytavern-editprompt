@@ -374,7 +374,7 @@ function formatMessages(messages) {
     return messages.map(msg => `${msg.name}: ${msg.mes}`).join('\n\n');
 }
 
-function replaceMessageTags(template, messages) {
+function replaceMessageTags(template, messages, regenerate) {
     let result = template;
 
     result = result.replace(/{all_messages}/g, formatMessages(messages));
@@ -407,15 +407,20 @@ function replaceMessageTags(template, messages) {
     }
 
     // Add support for {prompt} tag - insert current prompt content
-    const promptInfo = getPromptByName(currentPromptName);
-    const promptContent = promptInfo ? promptInfo.content : '';
-    result = result.replace(/{prompt}/g, promptContent);
+    if (regenerate === true) {
+        result = result.replace(/{prompt}/g, '');
+    }
+    else {
+        const promptInfo = getPromptByName(currentPromptName);
+        const promptContent = promptInfo ? promptInfo.content : '';
+        result = result.replace(/{prompt}/g, promptContent);
+    }
 
     return result;
 }
 
-function parsePromptTemplate(template, messages) {
-    const processedTemplate = replaceMessageTags(template, messages);
+function parsePromptTemplate(template, messages, regenerate) {
+    const processedTemplate = replaceMessageTags(template, messages, regenerate);
 
     const messageRegex = /\[(system|user|assistant)\](.*?)\[\/\1\]/gs;
 
@@ -469,7 +474,7 @@ function parsePromptTemplate(template, messages) {
     return parsedMessages;
 }
 
-async function generateAndUpdatePrompt() {
+async function generateAndUpdatePrompt(regenerate) {
     const context = getContext();
     const chat = context.chat;
 
@@ -495,7 +500,7 @@ async function generateAndUpdatePrompt() {
         }
 
         const instructionTemplate = settings.llm_prompt || '[system]Create a brief instruction.[/system]\n[user]{all_messages}[/user]';
-        const parsedMessages = parsePromptTemplate(instructionTemplate, visibleMessages);
+        const parsedMessages = parsePromptTemplate(instructionTemplate, visibleMessages, regenerate);
 
         let systemPrompt = '';
         let prompt;
@@ -572,7 +577,7 @@ async function generateAndUpdatePrompt() {
         let llmPrompt = settings.llm_prompt || 'Create a brief instruction based on: {all_messages}';
 
         if (/{(all_messages|previous_messages|previous_messages2|message_last|message_beforelast|prompt)}/.test(llmPrompt)) {
-            llmPrompt = replaceMessageTags(llmPrompt, visibleMessages);
+            llmPrompt = replaceMessageTags(llmPrompt, visibleMessages, regenerate);
         } else {
             llmPrompt = substituteParams(llmPrompt);
         }
@@ -638,7 +643,7 @@ async function onCharacterMessage(data) {
         lastProcessedMessage = lastMessage;
 
         try {
-            await generateAndUpdatePrompt();
+            await generateAndUpdatePrompt(false);
             toastr.success('Prompt updated automatically');
         } catch (error) {
             console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
@@ -657,7 +662,7 @@ async function onCharacterMessage(data) {
             lastProcessedMessage = lastMessage;
 
             try {
-                await generateAndUpdatePrompt();
+                await generateAndUpdatePrompt(false);
                 toastr.success('Prompt updated automatically');
             } catch (error) {
                 console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
@@ -679,7 +684,7 @@ jQuery(async () => {
         $("#dpm_generate_button").on("click", async () => {
             try {
                 toastr.info('Generating prompt update...');
-                await generateAndUpdatePrompt();
+                await generateAndUpdatePrompt(true);
                 toastr.success('Prompt updated successfully!');
             } catch (error) {
                 console.error(`[${MODULE_NAME}] Failed to update prompt:`, error);
