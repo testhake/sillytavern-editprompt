@@ -617,7 +617,7 @@ function parsePromptTemplate(template, messages, regenerate) {
     return parsedMessages;
 }
 
-async function generateAndUpdatePrompt(regenerate) {
+async function generateAndUpdatePrompt(regenerate = false) {
     const context = getContext();
     const chat = context.chat;
 
@@ -786,7 +786,7 @@ async function onCharacterMessage(data) {
         lastProcessedMessage = lastMessage;
 
         try {
-            await generateAndUpdatePrompt(false);
+            await generateAndUpdatePrompt();
             toastr.success('Prompt updated automatically');
         } catch (error) {
             console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
@@ -805,7 +805,7 @@ async function onCharacterMessage(data) {
             lastProcessedMessage = lastMessage;
 
             try {
-                await generateAndUpdatePrompt(false);
+                await generateAndUpdatePrompt();
                 toastr.success('Prompt updated automatically');
             } catch (error) {
                 console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
@@ -827,7 +827,7 @@ jQuery(async () => {
         $("#dpm_generate_button").on("click", async () => {
             try {
                 toastr.info('Generating prompt update...');
-                await generateAndUpdatePrompt(true);
+                await generateAndUpdatePrompt();
                 toastr.success('Prompt updated successfully!');
             } catch (error) {
                 console.error(`[${MODULE_NAME}] Failed to update prompt:`, error);
