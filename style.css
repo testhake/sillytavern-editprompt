@@ -132,6 +132,11 @@
     font-size: 14px;
 }
 
+.dpm-monitor-controls {
+    display: flex;
+    gap: 5px;
+}
+
 .dpm-monitor-clear,
 .dpm-monitor-close {
     background: none;
