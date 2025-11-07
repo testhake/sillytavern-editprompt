@@ -60,6 +60,7 @@ async function loadSettings() {
     $('#dpm_use_custom_generate_raw').prop('checked', !!settings.use_custom_generate_raw).trigger('input');
     $('#dpm_generate_on_user_message').prop('checked', settings.generate_on_user_message !== false).trigger('input');
     $('#dpm_show_monitor').prop('checked', settings.show_monitor !== false).trigger('input');
+    $('#dpm_enabled').prop('checked', settings.enabled !== false).trigger('input');
 
     currentPromptName = settings.prompt_name || 'Main Prompt';
 
@@ -87,7 +88,7 @@ async function loadSettings() {
 function onInput(event) {
     const id = event.target.id.replace('dpm_', '');
 
-    if (id === 'use_raw' || id === 'use_custom_generate_raw' || id === 'show_monitor') {
+    if (id === 'use_raw' || id === 'use_custom_generate_raw' || id === 'show_monitor' || id === 'generate_on_user_message' || id === 'enabled') {
         settings[id] = $(event.target).prop('checked');
 
         if (id === 'show_monitor') {
@@ -751,6 +752,10 @@ async function generateAndUpdatePrompt(regenerate = false) {
 }
 
 async function onCharacterMessage(data) {
+    // Check if extension is enabled
+    if (settings.enabled === false) {
+        return;
+    }
     const context = getContext();
     const chat = context.chat;
 
@@ -825,6 +830,10 @@ jQuery(async () => {
         $("#send_but").before(buttonHtml);
 
         $("#dpm_generate_button").on("click", async () => {
+            if (settings.enabled === false) {
+                toastr.warning('Extension is disabled. Enable it in settings first.');
+                return;
+            }
             try {
                 toastr.info('Generating prompt update...');
                 await generateAndUpdatePrompt();
