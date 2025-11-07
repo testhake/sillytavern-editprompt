@@ -30,6 +30,11 @@ let messageCounter = 0;
 let lastProcessedMessageIndex = -1;
 let lastProcessedMessage = '';
 
+// History tracking
+let promptHistory = [];
+let historyIndex = -1;
+const MAX_HISTORY = 50; // Maximum number of history entries to keep
+
 async function loadSettings() {
     if (!extension_settings[MODULE_NAME]) {
         extension_settings[MODULE_NAME] = {};
@@ -63,6 +68,8 @@ async function loadSettings() {
     }
 
     setTimeout(() => {
+        initializeHistory();
+
         const prompts = oai_settings?.prompts;
         if (prompts && Array.isArray(prompts)) {
             console.log(`[${MODULE_NAME}] Available prompts:`,
@@ -98,6 +105,8 @@ function onInput(event) {
 
         if (id === 'prompt_name') {
             currentPromptName = settings[id];
+            // Reset history when switching prompts
+            initializeHistory();
             updatePromptMonitor();
         }
     }
@@ -139,7 +148,7 @@ function getPromptByName(promptName) {
     }
 }
 
-function updatePromptContent(promptName, newContent) {
+function updatePromptContent(promptName, newContent, addToHistoryFlag = true) {
     try {
         // Access prompts from current oai_settings
         const prompts = oai_settings?.prompts;
@@ -153,6 +162,11 @@ function updatePromptContent(promptName, newContent) {
 
         if (!prompt) {
             throw new Error(`Prompt "${promptName}" not found`);
+        }
+
+        // Add to history before updating (if flag is true)
+        if (addToHistoryFlag) {
+            addToHistory(newContent);
         }
 
         // Update the content
@@ -203,6 +217,80 @@ async function savePresetWithPrompts(presetName, settings) {
     }
 }
 
+function addToHistory(content) {
+    // If we're not at the end of history, remove everything after current position
+    if (historyIndex < promptHistory.length - 1) {
+        promptHistory = promptHistory.slice(0, historyIndex + 1);
+    }
+
+    // Don't add if it's the same as the last entry
+    if (promptHistory.length > 0 && promptHistory[promptHistory.length - 1] === content) {
+        return;
+    }
+
+    // Add new entry
+    promptHistory.push(content);
+
+    // Keep history size under limit
+    if (promptHistory.length > MAX_HISTORY) {
+        promptHistory.shift();
+    } else {
+        historyIndex++;
+    }
+
+    updateHistoryButtons();
+    console.log(`[${MODULE_NAME}] Added to history. Index: ${historyIndex}, Total: ${promptHistory.length}`);
+}
+
+function updateHistoryButtons() {
+    if (!promptMonitorWindow) return;
+
+    const $backButton = $('#dpm_monitor_back');
+    const $forwardButton = $('#dpm_monitor_forward');
+    const $indicator = $('#dpm_history_indicator');
+
+    // Enable/disable buttons based on history position
+    $backButton.prop('disabled', historyIndex <= 0);
+    $forwardButton.prop('disabled', historyIndex >= promptHistory.length - 1);
+
+    // Update history indicator
+    if (promptHistory.length > 0) {
+        $indicator.text(`(${historyIndex + 1}/${promptHistory.length})`);
+    } else {
+        $indicator.text('');
+    }
+}
+
+async function goToHistoryIndex(newIndex) {
+    if (newIndex < 0 || newIndex >= promptHistory.length) {
+        return;
+    }
+
+    historyIndex = newIndex;
+    const content = promptHistory[historyIndex];
+
+    try {
+        // Update the prompt without adding to history
+        await updatePromptContent(currentPromptName, content, false);
+        updatePromptMonitor();
+        updateHistoryButtons();
+
+        console.log(`[${MODULE_NAME}] Navigated to history index ${historyIndex}`);
+    } catch (error) {
+        console.error(`[${MODULE_NAME}] Failed to restore from history:`, error);
+        toastr.error(`Failed to restore prompt: ${error.message}`);
+    }
+}
+
+function initializeHistory() {
+    // Load current prompt into history
+    const promptInfo = getPromptByName(currentPromptName);
+    if (promptInfo && promptInfo.content) {
+        promptHistory = [promptInfo.content];
+        historyIndex = 0;
+        updateHistoryButtons();
+    }
+}
 
 function showPromptMonitor() {
     if (promptMonitorWindow) {
@@ -217,6 +305,12 @@ function showPromptMonitor() {
                     <span>Prompt Monitor</span>
                 </div>
                 <div class="dpm-monitor-controls">
+                    <button class="dpm-monitor-history" id="dpm_monitor_back" title="Undo (Previous)" disabled>
+                        <i class="fa-solid fa-arrow-left"></i>
+                    </button>
+                    <button class="dpm-monitor-history" id="dpm_monitor_forward" title="Redo (Next)" disabled>
+                        <i class="fa-solid fa-arrow-right"></i>
+                    </button>
                     <button class="dpm-monitor-clear" id="dpm_monitor_clear" title="Clear Prompt">
                         <i class="fa-solid fa-eraser"></i>
                     </button>
@@ -228,6 +322,7 @@ function showPromptMonitor() {
             <div class="dpm-monitor-body">
                 <div class="dpm-prompt-name">
                     <strong>Prompt:</strong> <span id="dpm_current_prompt_name">${currentPromptName}</span>
+                    <span class="dpm-history-indicator" id="dpm_history_indicator"></span>
                 </div>
                 <div class="dpm-prompt-content" id="dpm_prompt_content">
                     <span class="dpm-loading">Loading prompt...</span>
@@ -245,6 +340,7 @@ function showPromptMonitor() {
     makeMonitorDraggable();
     bindMonitorEvents();
     updatePromptMonitor();
+    updateHistoryButtons();
 }
 
 
@@ -311,6 +407,14 @@ function bindMonitorEvents() {
         settings.show_monitor = false;
         extension_settings[MODULE_NAME] = settings;
         saveSettingsDebounced();
+    });
+
+    $('#dpm_monitor_back').on('click', async () => {
+        await goToHistoryIndex(historyIndex - 1);
+    });
+
+    $('#dpm_monitor_forward').on('click', async () => {
+        await goToHistoryIndex(historyIndex + 1);
     });
 
     let clearClickCount = 0;
@@ -633,7 +737,7 @@ async function generateAndUpdatePrompt(regenerate) {
         .trim();
 
     // Update the prompt
-    updatePromptContent(promptName, newPromptContent);
+    updatePromptContent(promptName, newPromptContent, !regenerate);
 
     // Update monitor display
     updatePromptMonitor();

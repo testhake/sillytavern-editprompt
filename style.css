@@ -137,6 +137,7 @@
     gap: 5px;
 }
 
+.dpm-monitor-history,
 .dpm-monitor-clear,
 .dpm-monitor-close {
     background: none;
@@ -154,10 +155,27 @@
     height: 24px;
 }
 
+    .dpm-monitor-history:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.1);
+        color: var(--SmartThemeQuoteColor, #fff);
+    }
+
     .dpm-monitor-clear,
     .dpm-monitor-close:hover {
         background: rgba(255, 255, 255, 0.1);
         color: var(--SmartThemeQuoteColor, #fff);
+    }
+
+    .dpm-monitor-history:disabled {
+        opacity: 0.3;
+        cursor: not-allowed;
+    }
+
+    .dpm-history-indicator {
+        font-size: 0.85em;
+        color: var(--SmartThemeQuoteColor);
+        margin-left: 8px;
+        font-weight: normal;
     }
 
     .dpm-monitor-clear i,
