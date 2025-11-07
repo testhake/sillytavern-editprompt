@@ -216,9 +216,14 @@ function showPromptMonitor() {
                     <i class="fa-solid fa-eye"></i>
                     <span>Prompt Monitor</span>
                 </div>
-                <button class="dpm-monitor-close" id="dpm_monitor_close" title="Close">
-                    <i class="fa-solid fa-times"></i>
-                </button>
+                <div class="dpm-monitor-controls">
+                    <button class="dpm-monitor-clear" id="dpm_monitor_clear" title="Clear Prompt">
+                        <i class="fa-solid fa-eraser"></i>
+                    </button>
+                    <button class="dpm-monitor-close" id="dpm_monitor_close" title="Close">
+                        <i class="fa-solid fa-times"></i>
+                    </button>
+                </div>
             </div>
             <div class="dpm-monitor-body">
                 <div class="dpm-prompt-name">
@@ -241,6 +246,7 @@ function showPromptMonitor() {
     bindMonitorEvents();
     updatePromptMonitor();
 }
+
 
 function hidePromptMonitor() {
     if (promptMonitorWindow) {
@@ -305,6 +311,39 @@ function bindMonitorEvents() {
         settings.show_monitor = false;
         extension_settings[MODULE_NAME] = settings;
         saveSettingsDebounced();
+    });
+
+    let clearClickCount = 0;
+    let clearClickTimer = null;
+
+    $('#dpm_monitor_clear').on('click', async () => {
+        clearClickCount++;
+
+        if (clearClickCount === 1) {
+            // First click
+            toastr.info('Click again to confirm clearing the prompt');
+            $('#dpm_monitor_clear').css('background', 'rgba(255, 100, 100, 0.3)');
+
+            clearClickTimer = setTimeout(() => {
+                clearClickCount = 0;
+                $('#dpm_monitor_clear').css('background', '');
+            }, 2000);
+        } else if (clearClickCount === 2) {
+            // Second click - confirm clear
+            clearTimeout(clearClickTimer);
+            clearClickCount = 0;
+            $('#dpm_monitor_clear').css('background', '');
+
+            try {
+                await updatePromptContent(currentPromptName, '');
+                updatePromptMonitor();
+                toastr.success('Prompt cleared successfully');
+                console.log(`[${MODULE_NAME}] Cleared prompt "${currentPromptName}"`);
+            } catch (error) {
+                console.error(`[${MODULE_NAME}] Failed to clear prompt:`, error);
+                toastr.error(`Failed to clear prompt: ${error.message}`);
+            }
+        }
     });
 }
 

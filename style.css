@@ -132,6 +132,7 @@
     font-size: 14px;
 }
 
+.dpm-monitor-clear,
 .dpm-monitor-close {
     background: none;
     border: none;
@@ -148,9 +149,15 @@
     height: 24px;
 }
 
+    .dpm-monitor-clear,
     .dpm-monitor-close:hover {
         background: rgba(255, 255, 255, 0.1);
         color: var(--SmartThemeQuoteColor, #fff);
+    }
+
+    .dpm-monitor-clear i,
+    .dpm-monitor-close i {
+        font-size: 14px;
     }
 
 .dpm-monitor-body {
