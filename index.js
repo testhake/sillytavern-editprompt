@@ -28,6 +28,7 @@ let promptMonitorWindow = null;
 let currentPromptName = '';
 let messageCounter = 0;
 let lastProcessedMessageIndex = -1;
+let lastProcessedMessage = '';
 
 async function loadSettings() {
     if (!extension_settings[MODULE_NAME]) {
@@ -52,6 +53,7 @@ async function loadSettings() {
 
     $('#dpm_use_raw').prop('checked', !!settings.use_raw).trigger('input');
     $('#dpm_use_custom_generate_raw').prop('checked', !!settings.use_custom_generate_raw).trigger('input');
+    $('#dpm_generate_on_user_message').prop('checked', settings.generate_on_user_message !== false).trigger('input');
     $('#dpm_show_monitor').prop('checked', settings.show_monitor !== false).trigger('input');
 
     currentPromptName = settings.prompt_name || 'Main Prompt';
@@ -620,20 +622,24 @@ async function onCharacterMessage(data) {
     const lastMessage = chat[chat.length - 1];
 
     // Check if it's from the character (not user, not system)
-    if (lastMessage.is_user || lastMessage.is_system) {
+    //if (lastMessage.is_user || lastMessage.is_system) {
+    if (settings.generate_on_user_message && lastMessage.is_system) {
         return;
     }
-
+    else if (lastMessage.is_user || lastMessage.is_system) {
+        return;
+    }
     const currentMessageIndex = chat.length - 1;
-
+    
     // Avoid processing the same message twice
-    if (currentMessageIndex <= lastProcessedMessageIndex) {
+    if (lastMessage === lastProcessedMessage) {
         return;
     }
 
     if (triggerMode === 'every_message') {
         console.log(`[${MODULE_NAME}] Triggering on every character message`);
         lastProcessedMessageIndex = currentMessageIndex;
+        lastProcessedMessage = lastMessage;
 
         try {
             await generateAndUpdatePrompt();
@@ -652,6 +658,7 @@ async function onCharacterMessage(data) {
             console.log(`[${MODULE_NAME}] Triggering on message interval`);
             messageCounter = 0;
             lastProcessedMessageIndex = currentMessageIndex;
+            lastProcessedMessage = lastMessage;
 
             try {
                 await generateAndUpdatePrompt();
