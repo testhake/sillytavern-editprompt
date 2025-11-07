@@ -108,8 +108,6 @@ function onInput(event) {
 
 function getPromptByName(promptName) {
     try {
-        const context = getContext();
-
         // Access prompts from the current oai_settings, not preset_settings_openai
         const prompts = oai_settings?.prompts;
 
@@ -143,8 +141,6 @@ function getPromptByName(promptName) {
 
 function updatePromptContent(promptName, newContent) {
     try {
-        const context = getContext();
-
         // Access prompts from current oai_settings
         const prompts = oai_settings?.prompts;
 
