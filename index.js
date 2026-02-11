@@ -968,8 +968,6 @@ async function onCharacterMessage(data) {
         }
     }
 }
-    }
-}
 
 jQuery(async () => {
     try {
