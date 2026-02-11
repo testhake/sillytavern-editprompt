@@ -896,7 +896,9 @@ async function generateAndUpdatePrompt() {
     return results;
 }
 
-async function onCharacterMessage(data) {
+async function onCharacterMessage(eventName) {
+    console.log(`[${MODULE_NAME}] Event triggered: ${eventName}`);
+
     if (settings.enabled === false) {
         return;
     }
@@ -917,11 +919,13 @@ async function onCharacterMessage(data) {
 
     // Skip system messages always
     if (lastMessage.is_system) {
+        console.log(`[${MODULE_NAME}] Skipping system message`);
         return;
     }
 
     // Skip user messages unless generate_on_user_message is enabled
     if (lastMessage.is_user && !settings.generate_on_user_message) {
+        console.log(`[${MODULE_NAME}] Skipping user message (generate_on_user_message is disabled)`);
         return;
     }
 
@@ -930,9 +934,11 @@ async function onCharacterMessage(data) {
 
     // Prevent processing the same message twice
     if (lastProcessedMessage === messageId) {
-        console.log(`[${MODULE_NAME}] Skipping already processed message at index ${currentMessageIndex}`);
+        console.log(`[${MODULE_NAME}] Skipping already processed message at index ${currentMessageIndex} (messageId: ${messageId.substring(0, 50)}...)`);
         return;
     }
+
+    console.log(`[${MODULE_NAME}] Processing new message at index ${currentMessageIndex}`);
 
     if (triggerMode === 'every_message') {
         console.log(`[${MODULE_NAME}] Triggering on character message at index ${currentMessageIndex}`);
@@ -1022,9 +1028,9 @@ jQuery(async () => {
             }
         });
 
-        eventSource.on(event_types.MESSAGE_RECEIVED, onCharacterMessage);
-        eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onCharacterMessage);
-        eventSource.on(event_types.MESSAGE_SWIPED, onCharacterMessage);
+        // Listen only to CHARACTER_MESSAGE_RENDERED which fires once per character message
+        // This includes both new messages and swipes/regenerations
+        eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => onCharacterMessage('CHARACTER_MESSAGE_RENDERED'));
 
         await loadSettings();
 
