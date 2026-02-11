@@ -28,6 +28,7 @@ let promptMonitorWindow = null;
 let messageCounter = 0;
 let lastProcessedMessageIndex = -1;
 let lastProcessedMessage = '';
+let isProcessing = false; // Flag to prevent recursive triggers
 
 // Default generation config
 const DEFAULT_GENERATION = {
@@ -855,12 +856,26 @@ async function applyGeneration(gen, content) {
         const lastMessage = chat[lastMessageIndex];
         lastMessage.mes += '\n\n' + content;
 
-        // Trigger proper message update
-        eventSource.emit(event_types.MESSAGE_UPDATED, lastMessageIndex);
+        // Update the lastProcessedMessage to include the new content
+        // This prevents the modified message from being processed again
+        lastProcessedMessage = `${lastMessageIndex}-${lastMessage.mes}`;
 
-        // Use SillyTavern's addOneMessage to refresh the display
-        const { addOneMessage } = await import('../../../../script.js');
-        addOneMessage(lastMessage, { type: 'swipe' });
+        // Directly update the DOM without triggering events
+        const $messageElement = $(`#chat .mes[mesid="${lastMessageIndex}"]`);
+        if ($messageElement.length > 0) {
+            // Find the message text container and update it
+            const $mesText = $messageElement.find('.mes_text');
+            if ($mesText.length > 0) {
+                // Use SillyTavern's message formatting
+                const { messageFormatting } = await import('../../../../script.js');
+                const formattedContent = messageFormatting(lastMessage.mes, lastMessage.name, lastMessage.is_system, lastMessage.is_user);
+                $mesText.html(formattedContent);
+            }
+        }
+
+        // Save chat without triggering events
+        const { saveChatConditional } = await import('../../../../script.js');
+        await saveChatConditional();
 
         console.log(`[${MODULE_NAME}] Appended content to last message and refreshed UI`);
     }
@@ -898,6 +913,12 @@ async function generateAndUpdatePrompt() {
 
 async function onCharacterMessage(eventName) {
     console.log(`[${MODULE_NAME}] Event triggered: ${eventName}`);
+
+    // Prevent recursive calls while processing
+    if (isProcessing) {
+        console.log(`[${MODULE_NAME}] Already processing, skipping this event`);
+        return;
+    }
 
     if (settings.enabled === false) {
         return;
@@ -945,6 +966,8 @@ async function onCharacterMessage(eventName) {
         lastProcessedMessage = messageId;
         lastProcessedMessageIndex = currentMessageIndex;
 
+        // Set processing flag
+        isProcessing = true;
         try {
             const results = await generateAndUpdatePrompt();
             const successCount = results.filter(r => r.success).length;
@@ -952,6 +975,12 @@ async function onCharacterMessage(eventName) {
         } catch (error) {
             console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
             toastr.error(`Failed to update: ${error.message}`);
+        } finally {
+            // Clear processing flag after a short delay to allow UI to settle
+            setTimeout(() => {
+                isProcessing = false;
+                console.log(`[${MODULE_NAME}] Processing flag cleared`);
+            }, 500);
         }
     } else if (triggerMode === 'interval') {
         // Only increment counter if this is a NEW message index (not a swipe/regeneration)
@@ -968,6 +997,8 @@ async function onCharacterMessage(eventName) {
             lastProcessedMessage = messageId;
             lastProcessedMessageIndex = currentMessageIndex;
 
+            // Set processing flag
+            isProcessing = true;
             try {
                 const results = await generateAndUpdatePrompt();
                 const successCount = results.filter(r => r.success).length;
@@ -975,6 +1006,12 @@ async function onCharacterMessage(eventName) {
             } catch (error) {
                 console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
                 toastr.error(`Failed to update: ${error.message}`);
+            } finally {
+                // Clear processing flag after a short delay to allow UI to settle
+                setTimeout(() => {
+                    isProcessing = false;
+                    console.log(`[${MODULE_NAME}] Processing flag cleared`);
+                }, 500);
             }
         } else {
             // Update tracking even if not triggering yet
