@@ -62,6 +62,17 @@ async function loadSettings() {
     $('#dpm_show_monitor').prop('checked', settings.show_monitor !== false).trigger('input');
     $('#dpm_enabled').prop('checked', settings.enabled !== false).trigger('input');
 
+    // Initialize tracking to current state to prevent processing existing messages on load
+    const context = getContext();
+    const chat = context.chat;
+    if (chat && chat.length > 0) {
+        const currentIndex = chat.length - 1;
+        const currentMessage = chat[currentIndex];
+        lastProcessedMessageIndex = currentIndex;
+        lastProcessedMessage = `${currentIndex}-${currentMessage.mes}`;
+        console.log(`[${MODULE_NAME}] Initialized tracking at message index ${currentIndex}`);
+    }
+
     // Render generations list
     renderGenerationsList();
 
@@ -844,15 +855,12 @@ async function applyGeneration(gen, content) {
         const lastMessage = chat[lastMessageIndex];
         lastMessage.mes += '\n\n' + content;
 
-        // Save the chat to persist changes
-        const { saveChatConditional } = await import('../../../../script.js');
-        await saveChatConditional();
-
-        // Trigger proper message update and UI refresh
+        // Trigger proper message update
         eventSource.emit(event_types.MESSAGE_UPDATED, lastMessageIndex);
 
-        // Force re-render the specific message
-        $(`#chat .mes[mesid="${lastMessageIndex}"]`).find('.mes_text').html(lastMessage.mes);
+        // Use SillyTavern's addOneMessage to refresh the display
+        const { addOneMessage } = await import('../../../../script.js');
+        addOneMessage(lastMessage, { type: 'swipe' });
 
         console.log(`[${MODULE_NAME}] Appended content to last message and refreshed UI`);
     }
@@ -917,18 +925,19 @@ async function onCharacterMessage(data) {
         return;
     }
 
-    // Prevent processing the same message twice by checking both index AND content
-    // This prevents duplicate triggers on page refresh/load
-    if (lastProcessedMessageIndex === currentMessageIndex &&
-        lastProcessedMessage === lastMessage.mes) {
+    // Create a unique identifier for this specific message content
+    const messageId = `${currentMessageIndex}-${lastMessage.mes}`;
+
+    // Prevent processing the same message twice
+    if (lastProcessedMessage === messageId) {
         console.log(`[${MODULE_NAME}] Skipping already processed message at index ${currentMessageIndex}`);
         return;
     }
 
     if (triggerMode === 'every_message') {
-        console.log(`[${MODULE_NAME}] Triggering on every character message`);
+        console.log(`[${MODULE_NAME}] Triggering on character message at index ${currentMessageIndex}`);
+        lastProcessedMessage = messageId;
         lastProcessedMessageIndex = currentMessageIndex;
-        lastProcessedMessage = lastMessage.mes;
 
         try {
             const results = await generateAndUpdatePrompt();
@@ -939,35 +948,36 @@ async function onCharacterMessage(data) {
             toastr.error(`Failed to update: ${error.message}`);
         }
     } else if (triggerMode === 'interval') {
-        // Only increment counter if this is a NEW message (not already processed)
+        // Only increment counter if this is a NEW message index (not a swipe/regeneration)
         if (lastProcessedMessageIndex !== currentMessageIndex) {
             messageCounter++;
-            const interval = settings.message_interval || 3;
+        }
 
-            console.log(`[${MODULE_NAME}] Message counter: ${messageCounter}/${interval}`);
+        const interval = settings.message_interval || 3;
+        console.log(`[${MODULE_NAME}] Message counter: ${messageCounter}/${interval}`);
 
-            if (messageCounter >= interval) {
-                console.log(`[${MODULE_NAME}] Triggering on message interval`);
-                messageCounter = 0;
-                lastProcessedMessageIndex = currentMessageIndex;
-                lastProcessedMessage = lastMessage.mes;
+        if (messageCounter >= interval) {
+            console.log(`[${MODULE_NAME}] Triggering on message interval`);
+            messageCounter = 0;
+            lastProcessedMessage = messageId;
+            lastProcessedMessageIndex = currentMessageIndex;
 
-                try {
-                    const results = await generateAndUpdatePrompt();
-                    const successCount = results.filter(r => r.success).length;
-                    toastr.success(`${successCount}/${results.length} generations completed`);
-                } catch (error) {
-                    console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
-                    toastr.error(`Failed to update: ${error.message}`);
-                }
-            } else {
-                // Update tracking even if not triggering
-                lastProcessedMessageIndex = currentMessageIndex;
-                lastProcessedMessage = lastMessage.mes;
+            try {
+                const results = await generateAndUpdatePrompt();
+                const successCount = results.filter(r => r.success).length;
+                toastr.success(`${successCount}/${results.length} generations completed`);
+            } catch (error) {
+                console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
+                toastr.error(`Failed to update: ${error.message}`);
             }
+        } else {
+            // Update tracking even if not triggering yet
+            lastProcessedMessage = messageId;
+            lastProcessedMessageIndex = currentMessageIndex;
         }
     }
 }
+
 
 jQuery(async () => {
     try {
