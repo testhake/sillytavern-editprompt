@@ -898,13 +898,17 @@ async function onCharacterMessage(data) {
 
     const lastMessage = chat[chat.length - 1];
 
-    if (settings.generate_on_user_message && lastMessage.is_system) {
-        return;
-    }
-    else if (lastMessage.is_user || lastMessage.is_system) {
+    // Skip system messages always
+    if (lastMessage.is_system) {
         return;
     }
 
+    // Skip user messages unless generate_on_user_message is enabled
+    if (lastMessage.is_user && !settings.generate_on_user_message) {
+        return;
+    }
+
+    // Avoid processing the same message twice
     if (lastMessage === lastProcessedMessage) {
         return;
     }
