@@ -13,92 +13,6 @@
                 </label>
                 <small class="notes">Turn the extension on or off</small>
             </div>
-            <!-- Target Prompt -->
-            <div class="marginBot10">
-                <label for="dpm_prompt_name" class="checkbox_label">
-                    <span>Target Prompt Name</span>
-                </label>
-                <input id="dpm_prompt_name" class="text_pole" type="text" value="Main Prompt" placeholder="Main Prompt" />
-                <small class="notes">Name of the prompt from Chat Completion Presets to modify</small>
-            </div>
-
-            <!-- LLM Prompt Template -->
-            <div class="marginBot10">
-                <label for="dpm_llm_prompt" class="checkbox_label">
-                    <span>LLM Prompt Template</span>
-                </label>
-                <textarea id="dpm_llm_prompt" class="textarea_compact" rows="8" placeholder="Enter your prompt template...">[system]You are an expert at creating concise writing instructions.[/system]
-[user]Based on this conversation: {all_messages}
-Create a brief instruction that captures the writing style and tone.[/user]</textarea>
-
-                <div class="note">
-                    <div class="m-b-1">
-                        <strong>📝 Message Tags:</strong>
-                        <div class="tags-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0; font-family: monospace; font-size: 11px;">
-                            <div><code>{all_messages}</code> - All visible messages</div>
-                            <div><code>{previous_messages}</code> - All but last message</div>
-                            <div><code>{previous_messages2}</code> - All but last 2 messages</div>
-                            <div><code>{message_last}</code> - Only the last message</div>
-                            <div><code>{message_beforelast}</code> - Message before last</div>
-                            <div><code>{prompt}</code> - Current prompt content</div>
-                        </div>
-                    </div>
-
-                    <div class="m-b-1">
-                        <strong>🏗️ Structured Format:</strong>
-                        <div style="margin: 8px 0; font-family: monospace; font-size: 11px; background: #f8f9fa; padding: 8px; border-radius: 4px;">
-                            <div><code>[system]Instructions here[/system]</code></div>
-                            <div><code>[user]User content with {all_messages}[/user]</code></div>
-                            <div><code>[assistant]Assistant content[/assistant]</code></div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Generation Options -->
-            <div class="title_restorable">
-                <h4>Generation Options</h4>
-            </div>
-
-            <div class="marginBot5">
-                <label class="checkbox_label" for="dpm_use_raw">
-                    <input id="dpm_use_raw" type="checkbox" />
-                    <span>Use Raw Generation</span>
-                </label>
-                <small class="notes">Bypass system instructions and character card for direct LLM access</small>
-            </div>
-
-            <div class="marginBot5">
-                <label class="checkbox_label" for="dpm_use_custom_generate_raw">
-                    <input id="dpm_use_custom_generate_raw" type="checkbox" />
-                    <span>Use Custom Raw Generation Method</span>
-                </label>
-                <small class="notes">Custom Raw Generation Method with stopping strings</small>
-            </div>
-
-            <div class="marginBot5">
-                <label for="dpm_custom_model" class="checkbox_label">
-                    <span>Custom Model (Optional)</span>
-                </label>
-                <input id="dpm_custom_model" class="text_pole" type="text" value="" placeholder="Leave blank to use current model" />
-                <small class="notes">Override model for this extension only</small>
-            </div>
-
-            <div class="marginBot5">
-                <label for="dpm_custom_parameters" class="checkbox_label">
-                    <span>Custom Parameters (Optional)</span>
-                </label>
-                <input id="dpm_custom_parameters" class="text_pole" type="text" value="" placeholder="Leave blank to use current parameters" />
-                <small class="notes">Override parameters for this extension only</small>
-            </div>
-
-            <div class="marginBot10">
-                <label for="dpm_message_count" class="checkbox_label">
-                    <span>Messages to Include</span>
-                </label>
-                <input id="dpm_message_count" class="text_pole" type="number" min="0" max="50" value="5" />
-                <small class="notes">Number of recent visible messages to include (0 = all messages)</small>
-            </div>
 
             <!-- Trigger Mode -->
             <div class="title_restorable">
@@ -107,14 +21,14 @@ Create a brief instruction that captures the writing style and tone.[/user]</tex
 
             <div class="marginBot10">
                 <label for="dpm_trigger_mode" class="checkbox_label">
-                    <span>When to Update Prompt</span>
+                    <span>When to Update</span>
                 </label>
                 <select id="dpm_trigger_mode" class="text_pole">
                     <option value="manual">Manual (button only)</option>
                     <option value="every_message">After every character message</option>
                     <option value="interval">Every X character messages</option>
                 </select>
-                <small class="notes">Choose when the prompt should be automatically updated</small>
+                <small class="notes">Choose when generations should be automatically executed</small>
             </div>
 
             <div class="marginBot10" id="dpm_interval_container">
@@ -122,7 +36,7 @@ Create a brief instruction that captures the writing style and tone.[/user]</tex
                     <span>Message Interval</span>
                 </label>
                 <input id="dpm_message_interval" class="text_pole" type="number" min="1" max="20" value="3" />
-                <small class="notes">Update prompt after this many character messages (only for interval mode)</small>
+                <small class="notes">Execute generations after this many character messages (only for interval mode)</small>
             </div>
 
             <div class="marginBot5">
@@ -138,12 +52,28 @@ Create a brief instruction that captures the writing style and tone.[/user]</tex
                 <h4>Monitor Options</h4>
             </div>
 
-            <div class="marginBot5">
+            <div class="marginBot10">
                 <label class="checkbox_label" for="dpm_show_monitor">
                     <input id="dpm_show_monitor" type="checkbox" checked />
-                    <span>Show Prompt Monitor Window</span>
+                    <span>Show Generations Monitor Window</span>
                 </label>
-                <small class="notes">Display a floating window showing the current prompt content in real-time</small>
+                <small class="notes">Display a floating window showing all generations and their current state</small>
+            </div>
+
+            <!-- Generations List -->
+            <div class="title_restorable">
+                <h4>Generations</h4>
+            </div>
+
+            <div class="dpm-generations-header">
+                <p class="notes">Configure multiple generations to execute in order. Each can edit a prompt or append to messages.</p>
+                <button id="dpm_add_generation" class="menu_button">
+                    <i class="fa-solid fa-plus"></i> Add Generation
+                </button>
+            </div>
+
+            <div id="dpm_generations_list" class="dpm-generations-list">
+                <!-- Generations will be rendered here -->
             </div>
 
         </div>

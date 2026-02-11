@@ -25,15 +25,24 @@ const extensionFolderPath = `scripts/extensions/third-party/${MODULE_NAME}`;
 
 let settings = {};
 let promptMonitorWindow = null;
-let currentPromptName = '';
 let messageCounter = 0;
 let lastProcessedMessageIndex = -1;
 let lastProcessedMessage = '';
 
-// History tracking
-let promptHistory = [];
-let historyIndex = -1;
-const MAX_HISTORY = 50; // Maximum number of history entries to keep
+// Default generation config
+const DEFAULT_GENERATION = {
+    id: Date.now(),
+    enabled: true,
+    name: 'Main Prompt',
+    mode: 'prompt', // 'prompt' or 'message'
+    prompt_name: 'Main Prompt',
+    llm_prompt: '[system]You are an expert at creating concise writing instructions.[/system]\n[user]Based on this conversation: {all_messages}\nCreate a brief instruction that captures the writing style and tone.[/user]',
+    use_raw: false,
+    use_custom_generate_raw: false,
+    custom_model: '',
+    custom_parameters: '',
+    message_count: 5
+};
 
 async function loadSettings() {
     if (!extension_settings[MODULE_NAME]) {
@@ -41,36 +50,26 @@ async function loadSettings() {
     }
     settings = extension_settings[MODULE_NAME];
 
-    const settingMappings = [
-        { id: '#dpm_llm_prompt', key: 'llm_prompt', defaultValue: '[system]You are an expert at creating concise writing instructions.[/system]\n[user]Based on this conversation: {all_messages}\nCreate a brief instruction that captures the writing style and tone.[/user]' },
-        { id: '#dpm_prompt_name', key: 'prompt_name', defaultValue: 'Main Prompt' },
-        { id: '#dpm_custom_model', key: 'custom_model', defaultValue: '' },
-        { id: '#dpm_custom_parameters', key: 'custom_parameters', defaultValue: '' },
-        { id: '#dpm_message_count', key: 'message_count', defaultValue: 5 },
-        { id: '#dpm_trigger_mode', key: 'trigger_mode', defaultValue: 'manual' },
-        { id: '#dpm_message_interval', key: 'message_interval', defaultValue: 3 }
-    ];
+    // Initialize generations array if it doesn't exist
+    if (!settings.generations || !Array.isArray(settings.generations)) {
+        settings.generations = [{ ...DEFAULT_GENERATION }];
+    }
 
-    settingMappings.forEach(mapping => {
-        const value = settings[mapping.key] || mapping.defaultValue;
-        $(mapping.id).val(value).trigger('input');
-    });
-
-    $('#dpm_use_raw').prop('checked', !!settings.use_raw).trigger('input');
-    $('#dpm_use_custom_generate_raw').prop('checked', !!settings.use_custom_generate_raw).trigger('input');
+    // Load global settings
+    $('#dpm_trigger_mode').val(settings.trigger_mode || 'manual').trigger('input');
+    $('#dpm_message_interval').val(settings.message_interval || 3).trigger('input');
     $('#dpm_generate_on_user_message').prop('checked', settings.generate_on_user_message !== false).trigger('input');
     $('#dpm_show_monitor').prop('checked', settings.show_monitor !== false).trigger('input');
     $('#dpm_enabled').prop('checked', settings.enabled !== false).trigger('input');
 
-    currentPromptName = settings.prompt_name || 'Main Prompt';
+    // Render generations list
+    renderGenerationsList();
 
     if (settings.show_monitor !== false) {
         showPromptMonitor();
     }
 
     setTimeout(() => {
-        initializeHistory();
-
         const prompts = oai_settings?.prompts;
         if (prompts && Array.isArray(prompts)) {
             console.log(`[${MODULE_NAME}] Available prompts:`,
@@ -85,10 +84,10 @@ async function loadSettings() {
     }, 1000);
 }
 
-function onInput(event) {
+function onGlobalInput(event) {
     const id = event.target.id.replace('dpm_', '');
 
-    if (id === 'use_raw' || id === 'use_custom_generate_raw' || id === 'show_monitor' || id === 'generate_on_user_message' || id === 'enabled') {
+    if (id === 'show_monitor' || id === 'generate_on_user_message' || id === 'enabled') {
         settings[id] = $(event.target).prop('checked');
 
         if (id === 'show_monitor') {
@@ -98,27 +97,235 @@ function onInput(event) {
                 hidePromptMonitor();
             }
         }
-    } else if (id === 'message_count' || id === 'message_interval') {
+    } else if (id === 'message_interval') {
         const value = parseInt($(event.target).val());
-        settings[id] = (!isNaN(value) && value >= 0) ? value : (id === 'message_count' ? 5 : 3);
+        settings[id] = (!isNaN(value) && value >= 0) ? value : 3;
     } else {
         settings[id] = $(event.target).val();
-
-        if (id === 'prompt_name') {
-            currentPromptName = settings[id];
-            // Reset history when switching prompts
-            initializeHistory();
-            updatePromptMonitor();
-        }
     }
 
     extension_settings[MODULE_NAME] = settings;
     saveSettingsDebounced();
 }
 
+function renderGenerationsList() {
+    const $container = $('#dpm_generations_list');
+    $container.empty();
+
+    if (!settings.generations || settings.generations.length === 0) {
+        settings.generations = [{ ...DEFAULT_GENERATION }];
+    }
+
+    settings.generations.forEach((gen, index) => {
+        const $item = createGenerationItem(gen, index);
+        $container.append($item);
+    });
+
+    // Update monitor if visible
+    updatePromptMonitor();
+}
+
+function createGenerationItem(gen, index) {
+    const modeLabel = gen.mode === 'prompt' ? 'Edit Prompt' : 'Edit Message';
+    const modeIcon = gen.mode === 'prompt' ? 'fa-file-text' : 'fa-comment';
+
+    const $item = $(`
+        <div class="dpm-generation-item" data-index="${index}">
+            <div class="dpm-gen-header">
+                <div class="dpm-gen-controls">
+                    <input type="checkbox" class="dpm-gen-enabled" ${gen.enabled ? 'checked' : ''} />
+                    <button class="dpm-gen-move" data-direction="up" title="Move Up">
+                        <i class="fa-solid fa-arrow-up"></i>
+                    </button>
+                    <button class="dpm-gen-move" data-direction="down" title="Move Down">
+                        <i class="fa-solid fa-arrow-down"></i>
+                    </button>
+                </div>
+                <div class="dpm-gen-title">
+                    <i class="fa-solid ${modeIcon}"></i>
+                    <input type="text" class="dpm-gen-name" value="${gen.name}" placeholder="Generation Name" />
+                    <span class="dpm-gen-mode-label">${modeLabel}</span>
+                </div>
+                <div class="dpm-gen-actions">
+                    <button class="dpm-gen-toggle" title="Expand/Collapse">
+                        <i class="fa-solid fa-chevron-down"></i>
+                    </button>
+                    <button class="dpm-gen-delete" title="Delete">
+                        <i class="fa-solid fa-trash"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="dpm-gen-body" style="display: none;">
+                <div class="dpm-gen-field">
+                    <label>Mode</label>
+                    <select class="dpm-gen-mode">
+                        <option value="prompt" ${gen.mode === 'prompt' ? 'selected' : ''}>Edit Prompt</option>
+                        <option value="message" ${gen.mode === 'message' ? 'selected' : ''}>Edit Message</option>
+                    </select>
+                    <small>Choose whether to edit a completion preset prompt or append to the last message</small>
+                </div>
+                
+                <div class="dpm-gen-field dpm-gen-prompt-field" style="${gen.mode === 'message' ? 'display: none;' : ''}">
+                    <label>Target Prompt Name</label>
+                    <input type="text" class="dpm-gen-prompt-name" value="${gen.prompt_name || 'Main Prompt'}" placeholder="Main Prompt" />
+                    <small>Name of the prompt from Chat Completion Presets to modify</small>
+                </div>
+                
+                <div class="dpm-gen-field">
+                    <label>LLM Prompt Template</label>
+                    <textarea class="dpm-gen-llm-prompt" rows="6">${gen.llm_prompt || DEFAULT_GENERATION.llm_prompt}</textarea>
+                    <small>Template for generating content. Use tags like {all_messages}, {prompt}, etc.</small>
+                </div>
+                
+                <div class="dpm-gen-field">
+                    <label>
+                        <input type="checkbox" class="dpm-gen-use-raw" ${gen.use_raw ? 'checked' : ''} />
+                        Use Raw Generation
+                    </label>
+                    <small>Bypass system instructions and character card</small>
+                </div>
+                
+                <div class="dpm-gen-field">
+                    <label>
+                        <input type="checkbox" class="dpm-gen-use-custom" ${gen.use_custom_generate_raw ? 'checked' : ''} />
+                        Use Custom Raw Generation Method
+                    </label>
+                    <small>Custom method with stopping strings</small>
+                </div>
+                
+                <div class="dpm-gen-field">
+                    <label>Custom Model (Optional)</label>
+                    <input type="text" class="dpm-gen-custom-model" value="${gen.custom_model || ''}" placeholder="Leave blank to use current model" />
+                </div>
+                
+                <div class="dpm-gen-field">
+                    <label>Custom Parameters (Optional)</label>
+                    <input type="text" class="dpm-gen-custom-params" value="${gen.custom_parameters || ''}" placeholder="Leave blank to use current parameters" />
+                </div>
+                
+                <div class="dpm-gen-field">
+                    <label>Messages to Include</label>
+                    <input type="number" class="dpm-gen-message-count" min="0" max="50" value="${gen.message_count || 5}" />
+                    <small>Number of recent visible messages to include (0 = all messages)</small>
+                </div>
+            </div>
+        </div>
+    `);
+
+    // Bind events
+    $item.find('.dpm-gen-enabled').on('change', function () {
+        gen.enabled = $(this).prop('checked');
+        saveGenerations();
+    });
+
+    $item.find('.dpm-gen-name').on('input', function () {
+        gen.name = $(this).val();
+        saveGenerations();
+    });
+
+    $item.find('.dpm-gen-mode').on('change', function () {
+        gen.mode = $(this).val();
+        const $promptField = $item.find('.dpm-gen-prompt-field');
+        const modeLabel = gen.mode === 'prompt' ? 'Edit Prompt' : 'Edit Message';
+        const modeIcon = gen.mode === 'prompt' ? 'fa-file-text' : 'fa-comment';
+
+        if (gen.mode === 'message') {
+            $promptField.hide();
+        } else {
+            $promptField.show();
+        }
+
+        $item.find('.dpm-gen-mode-label').text(modeLabel);
+        $item.find('.dpm-gen-title i').attr('class', `fa-solid ${modeIcon}`);
+        saveGenerations();
+    });
+
+    $item.find('.dpm-gen-prompt-name').on('input', function () {
+        gen.prompt_name = $(this).val();
+        saveGenerations();
+    });
+
+    $item.find('.dpm-gen-llm-prompt').on('input', function () {
+        gen.llm_prompt = $(this).val();
+        saveGenerations();
+    });
+
+    $item.find('.dpm-gen-use-raw').on('change', function () {
+        gen.use_raw = $(this).prop('checked');
+        saveGenerations();
+    });
+
+    $item.find('.dpm-gen-use-custom').on('change', function () {
+        gen.use_custom_generate_raw = $(this).prop('checked');
+        saveGenerations();
+    });
+
+    $item.find('.dpm-gen-custom-model').on('input', function () {
+        gen.custom_model = $(this).val();
+        saveGenerations();
+    });
+
+    $item.find('.dpm-gen-custom-params').on('input', function () {
+        gen.custom_parameters = $(this).val();
+        saveGenerations();
+    });
+
+    $item.find('.dpm-gen-message-count').on('input', function () {
+        const value = parseInt($(this).val());
+        gen.message_count = (!isNaN(value) && value >= 0) ? value : 5;
+        saveGenerations();
+    });
+
+    $item.find('.dpm-gen-toggle').on('click', function () {
+        const $body = $item.find('.dpm-gen-body');
+        const $icon = $(this).find('i');
+        $body.slideToggle(200);
+        $icon.toggleClass('fa-chevron-down fa-chevron-up');
+    });
+
+    $item.find('.dpm-gen-delete').on('click', function () {
+        if (settings.generations.length <= 1) {
+            toastr.warning('Cannot delete the last generation');
+            return;
+        }
+        if (confirm('Are you sure you want to delete this generation?')) {
+            settings.generations.splice(index, 1);
+            saveGenerations();
+            renderGenerationsList();
+        }
+    });
+
+    $item.find('.dpm-gen-move').on('click', function () {
+        const direction = $(this).data('direction');
+        moveGeneration(index, direction);
+    });
+
+    return $item;
+}
+
+function moveGeneration(index, direction) {
+    const newIndex = direction === 'up' ? index - 1 : index + 1;
+
+    if (newIndex < 0 || newIndex >= settings.generations.length) {
+        return;
+    }
+
+    const temp = settings.generations[index];
+    settings.generations[index] = settings.generations[newIndex];
+    settings.generations[newIndex] = temp;
+
+    saveGenerations();
+    renderGenerationsList();
+}
+
+function saveGenerations() {
+    extension_settings[MODULE_NAME] = settings;
+    saveSettingsDebounced();
+    updatePromptMonitor();
+}
+
 function getPromptByName(promptName) {
     try {
-        // Access prompts from the current oai_settings, not preset_settings_openai
         const prompts = oai_settings?.prompts;
 
         if (!prompts || !Array.isArray(prompts)) {
@@ -128,7 +335,6 @@ function getPromptByName(promptName) {
 
         console.log(`[${MODULE_NAME}] Searching for prompt "${promptName}" in ${prompts.length} prompts`);
 
-        // Search through prompts array to find matching name
         const prompt = prompts.find(p => p && p.name === promptName);
 
         if (prompt) {
@@ -149,34 +355,24 @@ function getPromptByName(promptName) {
     }
 }
 
-function updatePromptContent(promptName, newContent, addToHistoryFlag = true) {
+function updatePromptContent(promptName, newContent) {
     try {
-        // Access prompts from current oai_settings
         const prompts = oai_settings?.prompts;
 
         if (!prompts || !Array.isArray(prompts)) {
             throw new Error('Prompts array not accessible');
         }
 
-        // Find the prompt in the array
         const prompt = prompts.find(p => p && p.name === promptName);
 
         if (!prompt) {
             throw new Error(`Prompt "${promptName}" not found`);
         }
 
-        // Add to history before updating (if flag is true)
-        if (addToHistoryFlag) {
-            addToHistory(newContent);
-        }
-
-        // Update the content
         prompt.content = newContent;
 
-        // Save the entire preset with the updated prompts
         const presetName = oai_settings.preset_settings_openai;
 
-        // Use the saveOpenAIPreset approach via API
         return savePresetWithPrompts(presetName, oai_settings);
 
     } catch (error) {
@@ -195,8 +391,6 @@ async function savePresetWithPrompts(presetName, settings) {
                 name: presetName,
                 preset: {
                     prompts: settings.prompts,
-                    // Add all other fields from settings as needed
-                    // (refer to the saveOpenAIPreset function you provided)
                 },
             }),
         });
@@ -208,7 +402,6 @@ async function savePresetWithPrompts(presetName, settings) {
         const data = await response.json();
         console.log(`[${MODULE_NAME}] Successfully saved preset "${presetName}"`);
 
-        // Trigger settings update event to refresh UI
         eventSource.emit(event_types.SETTINGS_UPDATED);
 
         return true;
@@ -218,84 +411,9 @@ async function savePresetWithPrompts(presetName, settings) {
     }
 }
 
-function addToHistory(content) {
-    // If we're not at the end of history, remove everything after current position
-    if (historyIndex < promptHistory.length - 1) {
-        promptHistory = promptHistory.slice(0, historyIndex + 1);
-    }
-
-    // Don't add if it's the same as the last entry
-    if (promptHistory.length > 0 && promptHistory[promptHistory.length - 1] === content) {
-        return;
-    }
-
-    // Add new entry
-    promptHistory.push(content);
-
-    // Keep history size under limit
-    if (promptHistory.length > MAX_HISTORY) {
-        promptHistory.shift();
-    } else {
-        historyIndex++;
-    }
-
-    updateHistoryButtons();
-    console.log(`[${MODULE_NAME}] Added to history. Index: ${historyIndex}, Total: ${promptHistory.length}`);
-}
-
-function updateHistoryButtons() {
-    if (!promptMonitorWindow) return;
-
-    const $backButton = $('#dpm_monitor_back');
-    const $forwardButton = $('#dpm_monitor_forward');
-    const $indicator = $('#dpm_history_indicator');
-
-    // Enable/disable buttons based on history position
-    $backButton.prop('disabled', historyIndex <= 0);
-    $forwardButton.prop('disabled', historyIndex >= promptHistory.length - 1);
-
-    // Update history indicator
-    if (promptHistory.length > 0) {
-        $indicator.text(`(${historyIndex + 1}/${promptHistory.length})`);
-    } else {
-        $indicator.text('');
-    }
-}
-
-async function goToHistoryIndex(newIndex) {
-    if (newIndex < 0 || newIndex >= promptHistory.length) {
-        return;
-    }
-
-    historyIndex = newIndex;
-    const content = promptHistory[historyIndex];
-
-    try {
-        // Update the prompt without adding to history
-        await updatePromptContent(currentPromptName, content, false);
-        updatePromptMonitor();
-        updateHistoryButtons();
-
-        console.log(`[${MODULE_NAME}] Navigated to history index ${historyIndex}`);
-    } catch (error) {
-        console.error(`[${MODULE_NAME}] Failed to restore from history:`, error);
-        toastr.error(`Failed to restore prompt: ${error.message}`);
-    }
-}
-
-function initializeHistory() {
-    // Load current prompt into history
-    const promptInfo = getPromptByName(currentPromptName);
-    if (promptInfo && promptInfo.content) {
-        promptHistory = [promptInfo.content];
-        historyIndex = 0;
-        updateHistoryButtons();
-    }
-}
-
 function showPromptMonitor() {
     if (promptMonitorWindow) {
-        return; // Already shown
+        return;
     }
 
     const monitorHtml = `
@@ -303,34 +421,16 @@ function showPromptMonitor() {
             <div class="dpm-monitor-header" id="dpm_monitor_header">
                 <div class="dpm-monitor-title">
                     <i class="fa-solid fa-eye"></i>
-                    <span>Prompt Monitor</span>
+                    <span>Generations Monitor</span>
                 </div>
                 <div class="dpm-monitor-controls">
-                    <button class="dpm-monitor-history" id="dpm_monitor_back" title="Undo (Previous)" disabled>
-                        <i class="fa-solid fa-arrow-left"></i>
-                    </button>
-                    <button class="dpm-monitor-history" id="dpm_monitor_forward" title="Redo (Next)" disabled>
-                        <i class="fa-solid fa-arrow-right"></i>
-                    </button>
-                    <button class="dpm-monitor-clear" id="dpm_monitor_clear" title="Clear Prompt">
-                        <i class="fa-solid fa-eraser"></i>
-                    </button>
                     <button class="dpm-monitor-close" id="dpm_monitor_close" title="Close">
                         <i class="fa-solid fa-times"></i>
                     </button>
                 </div>
             </div>
-            <div class="dpm-monitor-body">
-                <div class="dpm-prompt-name">
-                    <strong>Prompt:</strong> <span id="dpm_current_prompt_name">${currentPromptName}</span>
-                    <span class="dpm-history-indicator" id="dpm_history_indicator"></span>
-                </div>
-                <div class="dpm-prompt-content" id="dpm_prompt_content">
-                    <span class="dpm-loading">Loading prompt...</span>
-                </div>
-                <div class="dpm-char-count">
-                    <span id="dpm_prompt_char_count">0</span> characters
-                </div>
+            <div class="dpm-monitor-body" id="dpm_monitor_body">
+                <div class="dpm-loading">Loading generations...</div>
             </div>
         </div>
     `;
@@ -341,9 +441,7 @@ function showPromptMonitor() {
     makeMonitorDraggable();
     bindMonitorEvents();
     updatePromptMonitor();
-    updateHistoryButtons();
 }
-
 
 function hidePromptMonitor() {
     if (promptMonitorWindow) {
@@ -409,64 +507,61 @@ function bindMonitorEvents() {
         extension_settings[MODULE_NAME] = settings;
         saveSettingsDebounced();
     });
-
-    $('#dpm_monitor_back').on('click', async () => {
-        await goToHistoryIndex(historyIndex - 1);
-    });
-
-    $('#dpm_monitor_forward').on('click', async () => {
-        await goToHistoryIndex(historyIndex + 1);
-    });
-
-    let clearClickCount = 0;
-    let clearClickTimer = null;
-
-    $('#dpm_monitor_clear').on('click', async () => {
-        clearClickCount++;
-
-        if (clearClickCount === 1) {
-            // First click
-            toastr.info('Click again to confirm clearing the prompt');
-            $('#dpm_monitor_clear').css('background', 'rgba(255, 100, 100, 0.3)');
-
-            clearClickTimer = setTimeout(() => {
-                clearClickCount = 0;
-                $('#dpm_monitor_clear').css('background', '');
-            }, 2000);
-        } else if (clearClickCount === 2) {
-            // Second click - confirm clear
-            clearTimeout(clearClickTimer);
-            clearClickCount = 0;
-            $('#dpm_monitor_clear').css('background', '');
-
-            try {
-                await updatePromptContent(currentPromptName, '');
-                updatePromptMonitor();
-                toastr.success('Prompt cleared successfully');
-                console.log(`[${MODULE_NAME}] Cleared prompt "${currentPromptName}"`);
-            } catch (error) {
-                console.error(`[${MODULE_NAME}] Failed to clear prompt:`, error);
-                toastr.error(`Failed to clear prompt: ${error.message}`);
-            }
-        }
-    });
 }
 
 function updatePromptMonitor() {
     if (!promptMonitorWindow) return;
 
-    const promptInfo = getPromptByName(currentPromptName);
+    const $body = $('#dpm_monitor_body');
+    $body.empty();
 
-    $('#dpm_current_prompt_name').text(currentPromptName);
-
-    if (promptInfo) {
-        const content = promptInfo.content || '(empty)';
-        $('#dpm_prompt_content').html(`<pre>${escapeHtml(content)}</pre>`);
-        $('#dpm_prompt_char_count').text(content.length);
-    } else {
-        $('#dpm_prompt_content').html('<span class="dpm-error">Prompt not found. Please check the name in settings.</span>');
-        $('#dpm_prompt_char_count').text('0');
+    if (!settings.generations || settings.generations.length === 0) {
+        $body.html('<div class="dpm-loading">No generations configured</div>');
+        return;
     }
+
+    settings.generations.forEach((gen, index) => {
+        const $genDisplay = $(`
+            <div class="dpm-monitor-gen ${gen.enabled ? '' : 'dpm-monitor-gen-disabled'}">
+                <div class="dpm-monitor-gen-header">
+                    <i class="fa-solid ${gen.mode === 'prompt' ? 'fa-file-text' : 'fa-comment'}"></i>
+                    <strong>${escapeHtml(gen.name)}</strong>
+                    <span class="dpm-monitor-gen-mode">${gen.mode === 'prompt' ? 'Prompt' : 'Message'}</span>
+                    ${!gen.enabled ? '<span class="dpm-monitor-gen-status">(Disabled)</span>' : ''}
+                </div>
+                <div class="dpm-monitor-gen-content" id="dpm_monitor_gen_${index}">
+                    <div class="dpm-loading">Loading...</div>
+                </div>
+            </div>
+        `);
+
+        $body.append($genDisplay);
+
+        if (gen.mode === 'prompt') {
+            const promptInfo = getPromptByName(gen.prompt_name);
+            const $content = $genDisplay.find(`#dpm_monitor_gen_${index}`);
+
+            if (promptInfo) {
+                const content = promptInfo.content || '(empty)';
+                $content.html(`
+                    <div class="dpm-monitor-prompt-name">Target: ${escapeHtml(gen.prompt_name)}</div>
+                    <pre>${escapeHtml(content)}</pre>
+                    <div class="dpm-monitor-char-count">${content.length} characters</div>
+                `);
+            } else {
+                $content.html('<span class="dpm-error">Prompt not found</span>');
+            }
+        } else {
+            // For message mode, show a placeholder
+            const $content = $genDisplay.find(`#dpm_monitor_gen_${index}`);
+            $content.html(`
+                <div class="dpm-monitor-message-info">
+                    <i class="fa-solid fa-info-circle"></i>
+                    Will append generated content to last message
+                </div>
+            `);
+        }
+    });
 }
 
 function escapeHtml(text) {
@@ -518,7 +613,7 @@ function formatMessages(messages) {
     return messages.map(msg => `${msg.name}: ${msg.mes}`).join('\n\n');
 }
 
-function replaceMessageTags(template, messages, regenerate) {
+function replaceMessageTags(template, messages, promptContent = '') {
     let result = template;
 
     result = result.replace(/{all_messages}/g, formatMessages(messages));
@@ -550,21 +645,13 @@ function replaceMessageTags(template, messages, regenerate) {
         result = result.replace(/{message_beforelast}/g, '');
     }
 
-    // Add support for {prompt} tag - insert current prompt content
-    if (regenerate === true) {
-        result = result.replace(/{prompt}/g, '');
-    }
-    else {
-        const promptInfo = getPromptByName(currentPromptName);
-        const promptContent = promptInfo ? promptInfo.content : '';
-        result = result.replace(/{prompt}/g, promptContent);
-    }
+    result = result.replace(/{prompt}/g, promptContent);
 
     return result;
 }
 
-function parsePromptTemplate(template, messages, regenerate) {
-    const processedTemplate = replaceMessageTags(template, messages, regenerate);
+function parsePromptTemplate(template, messages, promptContent = '') {
+    const processedTemplate = replaceMessageTags(template, messages, promptContent);
 
     const messageRegex = /\[(system|user|assistant)\](.*?)\[\/\1\]/gs;
 
@@ -618,33 +705,35 @@ function parsePromptTemplate(template, messages, regenerate) {
     return parsedMessages;
 }
 
-async function generateAndUpdatePrompt(regenerate = false) {
+async function executeGeneration(gen) {
     const context = getContext();
     const chat = context.chat;
 
     if (!Array.isArray(chat) || chat.length === 0) {
-        throw new Error(`[${MODULE_NAME}] No chat messages available.`);
+        throw new Error(`No chat messages available.`);
     }
 
-    const promptName = settings.prompt_name || 'Main Prompt';
-    const promptInfo = getPromptByName(promptName);
+    const messageCount = gen.message_count ?? 5;
+    const visibleMessages = getVisibleMessages(chat, messageCount);
 
-    if (!promptInfo) {
-        throw new Error(`[${MODULE_NAME}] Prompt "${promptName}" not found. Please check the prompt name in settings.`);
+    if (visibleMessages.length === 0) {
+        throw new Error(`No visible messages found.`);
     }
 
-    let newPromptContent;
-
-    if (settings.use_raw) {
-        const messageCount = settings.message_count ?? 5;
-        const visibleMessages = getVisibleMessages(chat, messageCount);
-
-        if (visibleMessages.length === 0) {
-            throw new Error(`[${MODULE_NAME}] No visible messages found.`);
+    let promptContent = '';
+    if (gen.mode === 'prompt') {
+        const promptInfo = getPromptByName(gen.prompt_name);
+        if (!promptInfo) {
+            throw new Error(`Prompt "${gen.prompt_name}" not found.`);
         }
+        promptContent = promptInfo.content;
+    }
 
-        const instructionTemplate = settings.llm_prompt || '[system]Create a brief instruction.[/system]\n[user]{all_messages}[/user]';
-        const parsedMessages = parsePromptTemplate(instructionTemplate, visibleMessages, regenerate);
+    let newContent;
+
+    if (gen.use_raw) {
+        const instructionTemplate = gen.llm_prompt || DEFAULT_GENERATION.llm_prompt;
+        const parsedMessages = parsePromptTemplate(instructionTemplate, visibleMessages, promptContent);
 
         let systemPrompt = '';
         let prompt;
@@ -685,7 +774,7 @@ async function generateAndUpdatePrompt(regenerate = false) {
         }
 
         try {
-            if (settings.use_custom_generate_raw === true) {
+            if (gen.use_custom_generate_raw === true) {
                 const result = await generateRawWithStops({
                     systemPrompt: systemPrompt,
                     prompt: prompt,
@@ -699,7 +788,7 @@ async function generateAndUpdatePrompt(regenerate = false) {
                     ],
                 });
                 console.log(`[${MODULE_NAME}] generateRawWithStops result:`, result);
-                newPromptContent = result;
+                newContent = result;
             } else {
                 const result = await generateRaw({
                     systemPrompt: systemPrompt,
@@ -707,38 +796,80 @@ async function generateAndUpdatePrompt(regenerate = false) {
                     prefill: ''
                 });
                 console.log(`[${MODULE_NAME}] generateRaw result:`, result);
-                newPromptContent = result;
+                newContent = result;
             }
         } catch (error) {
-            const methodName = settings.use_custom_generate_raw ? "generateRawWithStops" : "generateRaw";
+            const methodName = gen.use_custom_generate_raw ? "generateRawWithStops" : "generateRaw";
             console.error(`[${MODULE_NAME}] ${methodName} failed:`, error);
             throw error;
         }
     } else {
-        const messageCount = settings.message_count ?? 5;
-        const visibleMessages = getVisibleMessages(chat, messageCount);
-
-        let llmPrompt = settings.llm_prompt || 'Create a brief instruction based on: {all_messages}';
+        let llmPrompt = gen.llm_prompt || DEFAULT_GENERATION.llm_prompt;
 
         if (/{(all_messages|previous_messages|previous_messages2|message_last|message_beforelast|prompt)}/.test(llmPrompt)) {
-            llmPrompt = replaceMessageTags(llmPrompt, visibleMessages, regenerate);
+            llmPrompt = replaceMessageTags(llmPrompt, visibleMessages, promptContent);
         } else {
             llmPrompt = substituteParams(llmPrompt);
         }
 
         const { generateQuietPrompt } = await import('../../../../script.js');
-        newPromptContent = await generateQuietPrompt(llmPrompt);
+        newContent = await generateQuietPrompt(llmPrompt);
     }
 
     // Clean up the generated content
-    newPromptContent = newPromptContent
+    newContent = newContent
         .replace(/\*/g, "")
         .replace(/\"/g, "")
         .replace(/`/g, "")
         .trim();
 
-    // Update the prompt
-    updatePromptContent(promptName, newPromptContent, !regenerate);
+    return newContent;
+}
+
+async function applyGeneration(gen, content) {
+    if (gen.mode === 'prompt') {
+        // Update prompt
+        await updatePromptContent(gen.prompt_name, content);
+        console.log(`[${MODULE_NAME}] Updated prompt "${gen.prompt_name}"`);
+    } else {
+        // Append to last message
+        const context = getContext();
+        const chat = context.chat;
+
+        if (!chat || chat.length === 0) {
+            throw new Error('No messages to append to');
+        }
+
+        const lastMessage = chat[chat.length - 1];
+        lastMessage.mes += '\n\n' + content;
+
+        // Trigger message update
+        eventSource.emit(event_types.MESSAGE_UPDATED, chat.length - 1);
+
+        console.log(`[${MODULE_NAME}] Appended content to last message`);
+    }
+}
+
+async function generateAndUpdatePrompt() {
+    const enabledGenerations = settings.generations.filter(gen => gen.enabled);
+
+    if (enabledGenerations.length === 0) {
+        throw new Error('No enabled generations');
+    }
+
+    const results = [];
+
+    for (const gen of enabledGenerations) {
+        try {
+            console.log(`[${MODULE_NAME}] Executing generation: ${gen.name}`);
+            const content = await executeGeneration(gen);
+            await applyGeneration(gen, content);
+            results.push({ name: gen.name, success: true });
+        } catch (error) {
+            console.error(`[${MODULE_NAME}] Generation "${gen.name}" failed:`, error);
+            results.push({ name: gen.name, success: false, error: error.message });
+        }
+    }
 
     // Update monitor display
     updatePromptMonitor();
@@ -746,16 +877,14 @@ async function generateAndUpdatePrompt(regenerate = false) {
     // Play notification sound
     playNotificationSound();
 
-    console.log(`[${MODULE_NAME}] Successfully updated prompt "${promptName}"`);
-
-    return newPromptContent;
+    return results;
 }
 
 async function onCharacterMessage(data) {
-    // Check if extension is enabled
     if (settings.enabled === false) {
         return;
     }
+
     const context = getContext();
     const chat = context.chat;
 
@@ -764,38 +893,33 @@ async function onCharacterMessage(data) {
     const triggerMode = settings.trigger_mode || 'manual';
 
     if (triggerMode === 'manual') {
-        return; // Don't auto-trigger
+        return;
     }
 
-    // Get the last message
     const lastMessage = chat[chat.length - 1];
 
-    // Check if it's from the character (not user, not system)
-    //if (lastMessage.is_user || lastMessage.is_system) {
     if (settings.generate_on_user_message && lastMessage.is_system) {
         return;
     }
     else if (lastMessage.is_user || lastMessage.is_system) {
         return;
     }
-    const currentMessageIndex = chat.length - 1;
-    
-    // Avoid processing the same message twice
+
     if (lastMessage === lastProcessedMessage) {
         return;
     }
 
     if (triggerMode === 'every_message') {
         console.log(`[${MODULE_NAME}] Triggering on every character message`);
-        lastProcessedMessageIndex = currentMessageIndex;
         lastProcessedMessage = lastMessage;
 
         try {
-            await generateAndUpdatePrompt();
-            toastr.success('Prompt updated automatically');
+            const results = await generateAndUpdatePrompt();
+            const successCount = results.filter(r => r.success).length;
+            toastr.success(`${successCount}/${results.length} generations completed`);
         } catch (error) {
             console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
-            toastr.error(`Failed to update prompt: ${error.message}`);
+            toastr.error(`Failed to update: ${error.message}`);
         }
     } else if (triggerMode === 'interval') {
         messageCounter++;
@@ -806,15 +930,15 @@ async function onCharacterMessage(data) {
         if (messageCounter >= interval) {
             console.log(`[${MODULE_NAME}] Triggering on message interval`);
             messageCounter = 0;
-            lastProcessedMessageIndex = currentMessageIndex;
             lastProcessedMessage = lastMessage;
 
             try {
-                await generateAndUpdatePrompt();
-                toastr.success('Prompt updated automatically');
+                const results = await generateAndUpdatePrompt();
+                const successCount = results.filter(r => r.success).length;
+                toastr.success(`${successCount}/${results.length} generations completed`);
             } catch (error) {
                 console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
-                toastr.error(`Failed to update prompt: ${error.message}`);
+                toastr.error(`Failed to update: ${error.message}`);
             }
         }
     }
@@ -824,7 +948,19 @@ jQuery(async () => {
     try {
         const settingsHtml = await $.get(`${extensionFolderPath}/settings.html`);
         $("#extensions_settings").append(settingsHtml);
-        $("#dpm_settings input, #dpm_settings textarea, #dpm_settings select").on("input change", onInput);
+        $("#dpm_settings input, #dpm_settings textarea, #dpm_settings select").on("input change", onGlobalInput);
+
+        // Add generation button
+        $('#dpm_add_generation').on('click', () => {
+            const newGen = {
+                ...DEFAULT_GENERATION,
+                id: Date.now(),
+                name: `Generation ${settings.generations.length + 1}`
+            };
+            settings.generations.push(newGen);
+            saveGenerations();
+            renderGenerationsList();
+        });
 
         const buttonHtml = await $.get(`${extensionFolderPath}/button.html`);
         $("#send_but").before(buttonHtml);
@@ -835,16 +971,22 @@ jQuery(async () => {
                 return;
             }
             try {
-                toastr.info('Generating prompt update...');
-                await generateAndUpdatePrompt();
-                toastr.success('Prompt updated successfully!');
+                toastr.info('Executing generations...');
+                const results = await generateAndUpdatePrompt();
+                const successCount = results.filter(r => r.success).length;
+                const failCount = results.filter(r => !r.success).length;
+
+                if (failCount > 0) {
+                    toastr.warning(`Completed: ${successCount} successful, ${failCount} failed`);
+                } else {
+                    toastr.success(`All ${successCount} generations completed!`);
+                }
             } catch (error) {
-                console.error(`[${MODULE_NAME}] Failed to update prompt:`, error);
-                toastr.error(`Failed to update prompt: ${error.message}`);
+                console.error(`[${MODULE_NAME}] Failed to execute generations:`, error);
+                toastr.error(`Failed: ${error.message}`);
             }
         });
 
-        // Listen for character messages
         eventSource.on(event_types.MESSAGE_RECEIVED, onCharacterMessage);
         eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onCharacterMessage);
 
