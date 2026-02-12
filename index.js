@@ -61,18 +61,27 @@ function setMemoInCache(chatId, messageIndex, swipeId, memoContent) {
 
 /**
  * Search backwards from `upToIndex` (inclusive) and return the first memo found.
- * This fixes both regeneration and deletion bugs — previously only index - 1 was
- * checked, so a user message between two character messages would yield no memo.
+ * Scans all swipe keys as a fallback in case activeSwipe points to a missing key
+ * (which can happen after JSON round-trip or if a swipe was deleted mid-session).
  */
 function findLatestMemo(chatId, upToIndex) {
     if (upToIndex < 0 || !memoCache[chatId]) return null;
 
     for (let i = upToIndex; i >= 0; i--) {
         const entry = memoCache[chatId][i];
-        if (!entry) continue;
-        const swipeId = entry.activeSwipe ?? 0;
-        const memo = entry.swipes?.[swipeId];
-        if (memo) return memo;
+        if (!entry?.swipes) continue;
+
+        // Prefer the tracked activeSwipe first.
+        const preferredSwipe = entry.activeSwipe ?? 0;
+        const preferredMemo = entry.swipes[preferredSwipe];
+        if (preferredMemo != null && preferredMemo !== '') return preferredMemo;
+
+        // Fallback: scan all swipe keys in descending order.
+        const swipeKeys = Object.keys(entry.swipes).map(Number).sort((a, b) => b - a);
+        for (const key of swipeKeys) {
+            const memo = entry.swipes[key];
+            if (memo != null && memo !== '') return memo;
+        }
     }
     return null;
 }
@@ -744,15 +753,17 @@ async function executeGeneration(gen) {
 
 async function applyGeneration(gen, content) {
     if (gen.mode === 'prompt') {
-        await updatePromptContent(gen.prompt_name, content);
-
+        // Store memo FIRST — before awaiting the preset save.
+        // If savePresetWithPrompts throws later (e.g. network error), the memo is
+        // already in the cache so restores still work on the next regeneration/deletion.
         const context = getContext();
         const chat = context.chat;
         const chatId = getCurrentChatId();
         const messageIndex = chat.length - 1;
         const swipeId = chat[messageIndex].swipe_id || 0;
-
         setMemoInCache(chatId, messageIndex, swipeId, content);
+
+        await updatePromptContent(gen.prompt_name, content);
         console.log(`[${MODULE_NAME}] Updated prompt "${gen.prompt_name}" and cached memo`);
     } else {
         const context = getContext();
@@ -1038,8 +1049,9 @@ jQuery(async () => {
 
         $('#dpm_clear_cache').on('click', () => {
             if (!confirm('Clear all cached memos? This cannot be undone.')) return;
-            memoCache = {};
+            // Assign the SAME object to both so they stay in sync.
             settings.memo_cache = {};
+            memoCache = settings.memo_cache;
             extension_settings[MODULE_NAME] = settings;
             saveSettingsDebounced();
             toastr.success('Memo cache cleared');
