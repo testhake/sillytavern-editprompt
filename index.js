@@ -7,17 +7,11 @@ import { generateRawWithStops } from './src/custom.js';
 import { power_user } from '../../../power-user.js';
 
 export function getCustomModel() {
-    if (!settings.custom_model) {
-        return '';
-    }
-    return String(settings.custom_model);
+    return settings.custom_model ? String(settings.custom_model) : '';
 }
 
 export function getCustomParameters() {
-    if (!settings.custom_parameters) {
-        return '';
-    }
-    return String(settings.custom_parameters);
+    return settings.custom_parameters ? String(settings.custom_parameters) : '';
 }
 
 const MODULE_NAME = 'sillytavern-editprompt';
@@ -28,44 +22,36 @@ let promptMonitorWindow = null;
 let messageCounter = 0;
 let lastProcessedMessageIndex = -1;
 let lastProcessedMessage = '';
-let isProcessing = false; // Flag to prevent recursive triggers
-let memoCache = {}; // In-memory cache, synced with settings
+let isProcessing = false;
+let memoCache = {};
 
-// Memo cache helper functions
+// ---------------------------------------------------------------------------
+// Memo cache helpers
+// ---------------------------------------------------------------------------
+
 function getCurrentChatId() {
     const context = getContext();
     return context.chatId || context.characterId || 'default';
 }
 
 function initializeMemoCache() {
-    if (!settings.memo_cache) {
-        settings.memo_cache = {};
-    }
+    if (!settings.memo_cache) settings.memo_cache = {};
     memoCache = settings.memo_cache;
 }
 
 function getMemoFromCache(chatId, messageIndex, swipeId) {
-    if (!memoCache[chatId]) return null;
-    if (!memoCache[chatId][messageIndex]) return null;
-    if (!memoCache[chatId][messageIndex].swipes) return null;
-    return memoCache[chatId][messageIndex].swipes[swipeId] || null;
+    return memoCache[chatId]?.[messageIndex]?.swipes?.[swipeId] ?? null;
 }
 
 function setMemoInCache(chatId, messageIndex, swipeId, memoContent) {
-    if (!memoCache[chatId]) {
-        memoCache[chatId] = {};
-    }
+    if (!memoCache[chatId]) memoCache[chatId] = {};
     if (!memoCache[chatId][messageIndex]) {
-        memoCache[chatId][messageIndex] = {
-            swipes: {},
-            activeSwipe: swipeId
-        };
+        memoCache[chatId][messageIndex] = { swipes: {}, activeSwipe: swipeId };
     }
 
     memoCache[chatId][messageIndex].swipes[swipeId] = memoContent;
     memoCache[chatId][messageIndex].activeSwipe = swipeId;
 
-    // Persist to settings
     settings.memo_cache = memoCache;
     extension_settings[MODULE_NAME] = settings;
     saveSettingsDebounced();
@@ -73,21 +59,33 @@ function setMemoInCache(chatId, messageIndex, swipeId, memoContent) {
     console.log(`[${MODULE_NAME}] Cached memo for chat:${chatId} msg:${messageIndex} swipe:${swipeId}`);
 }
 
-function getPreviousMessageMemo(chatId, messageIndex) {
-    // Get memo from previous message (using its active swipe)
-    if (messageIndex <= 0) return null;
+/**
+ * Search backwards from `upToIndex` (inclusive) and return the first memo found.
+ * This fixes both regeneration and deletion bugs — previously only index - 1 was
+ * checked, so a user message between two character messages would yield no memo.
+ */
+function findLatestMemo(chatId, upToIndex) {
+    if (upToIndex < 0 || !memoCache[chatId]) return null;
 
-    const prevIndex = messageIndex - 1;
-    if (!memoCache[chatId] || !memoCache[chatId][prevIndex]) return null;
+    for (let i = upToIndex; i >= 0; i--) {
+        const entry = memoCache[chatId][i];
+        if (!entry) continue;
+        const swipeId = entry.activeSwipe ?? 0;
+        const memo = entry.swipes?.[swipeId];
+        if (memo) return memo;
+    }
+    return null;
+}
 
-    const prevMessage = memoCache[chatId][prevIndex];
-    const activeSwipeId = prevMessage.activeSwipe || 0;
-
-    return prevMessage.swipes[activeSwipeId] || null;
+/**
+ * Convenience wrapper: find the latest memo that came BEFORE the given index
+ * (i.e. the context that was active when the message at `messageIndex` was generated).
+ */
+function findLatestMemoBeforeIndex(chatId, messageIndex) {
+    return findLatestMemo(chatId, messageIndex - 1);
 }
 
 function cleanupMemoCache(chatId, validMessageIndices) {
-    // Remove memos for messages that no longer exist
     if (!memoCache[chatId]) return;
 
     const cachedIndices = Object.keys(memoCache[chatId]).map(Number);
@@ -108,12 +106,15 @@ function cleanupMemoCache(chatId, validMessageIndices) {
     }
 }
 
-// Default generation config
+// ---------------------------------------------------------------------------
+// Generation config helpers
+// ---------------------------------------------------------------------------
+
 const DEFAULT_GENERATION = {
     id: Date.now(),
     enabled: true,
     name: 'Main Prompt',
-    mode: 'prompt', // 'prompt' or 'message'
+    mode: 'prompt',
     prompt_name: 'Main Prompt',
     llm_prompt: '[system]You are an expert at creating concise writing instructions.[/system]\n[user]Based on this conversation: {all_messages}\nCreate a brief instruction that captures the writing style and tone.[/user]',
     use_raw: false,
@@ -123,21 +124,120 @@ const DEFAULT_GENERATION = {
     message_count: 5
 };
 
-async function loadSettings() {
-    if (!extension_settings[MODULE_NAME]) {
-        extension_settings[MODULE_NAME] = {};
+/** Returns all enabled generations whose mode is 'prompt'. */
+function getEnabledPromptGenerations() {
+    return (settings.generations ?? []).filter(gen => gen.enabled && gen.mode === 'prompt');
+}
+
+// ---------------------------------------------------------------------------
+// Prompt management
+// ---------------------------------------------------------------------------
+
+function getPromptByName(promptName) {
+    try {
+        const prompts = oai_settings?.prompts;
+        if (!Array.isArray(prompts)) {
+            console.warn(`[${MODULE_NAME}] Prompts array not accessible`);
+            return null;
+        }
+
+        const prompt = prompts.find(p => p?.name === promptName);
+        if (prompt) return { identifier: prompt.identifier, content: prompt.content || '', promptData: prompt };
+
+        console.warn(`[${MODULE_NAME}] Prompt "${promptName}" not found. Available:`,
+            prompts.map(p => p?.name).filter(Boolean));
+        return null;
+    } catch (error) {
+        console.error(`[${MODULE_NAME}] Error accessing prompts:`, error);
+        return null;
     }
+}
+
+function updatePromptContent(promptName, newContent) {
+    const prompts = oai_settings?.prompts;
+    if (!Array.isArray(prompts)) throw new Error('Prompts array not accessible');
+
+    const prompt = prompts.find(p => p?.name === promptName);
+    if (!prompt) throw new Error(`Prompt "${promptName}" not found`);
+
+    prompt.content = newContent;
+    return savePresetWithPrompts(oai_settings.preset_settings_openai, oai_settings);
+}
+
+async function savePresetWithPrompts(presetName, oaiSettings) {
+    const response = await fetch('/api/presets/save', {
+        method: 'POST',
+        headers: getRequestHeaders(),
+        body: JSON.stringify({
+            apiId: 'openai',
+            name: presetName,
+            preset: { prompts: oaiSettings.prompts },
+        }),
+    });
+
+    if (!response.ok) throw new Error(`Failed to save preset: ${response.status}`);
+
+    await response.json();
+    console.log(`[${MODULE_NAME}] Successfully saved preset "${presetName}"`);
+    eventSource.emit(event_types.SETTINGS_UPDATED);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Prompt restoration helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Restore (or clear) every enabled prompt generation's content based on what is
+ * cached for the current end of `chat`.  Called on chat load, chat change, and
+ * after message deletion so the logic lives in one place.
+ */
+async function restorePromptsForChat(chatId, chat) {
+    const promptGens = getEnabledPromptGenerations();
+    if (promptGens.length === 0) return;
+
+    if (!chat || chat.length === 0) {
+        for (const gen of promptGens) {
+            try {
+                await updatePromptContent(gen.prompt_name, '');
+                console.log(`[${MODULE_NAME}] Cleared prompt "${gen.prompt_name}" (empty chat)`);
+            } catch (error) {
+                console.error(`[${MODULE_NAME}] Failed to clear prompt:`, error);
+            }
+        }
+        return;
+    }
+
+    // Walk backwards to find the most recent memo in this chat.
+    const lastIndex = chat.length - 1;
+    const latestMemo = findLatestMemo(chatId, lastIndex);
+
+    for (const gen of promptGens) {
+        try {
+            await updatePromptContent(gen.prompt_name, latestMemo ?? '');
+            console.log(`[${MODULE_NAME}] ${latestMemo ? 'Restored' : 'Cleared'} prompt "${gen.prompt_name}"`);
+        } catch (error) {
+            console.error(`[${MODULE_NAME}] Failed to restore/clear prompt "${gen.prompt_name}":`, error);
+        }
+    }
+
+    updatePromptMonitor();
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+async function loadSettings() {
+    if (!extension_settings[MODULE_NAME]) extension_settings[MODULE_NAME] = {};
     settings = extension_settings[MODULE_NAME];
 
-    // Initialize memo cache
     initializeMemoCache();
 
-    // Initialize generations array if it doesn't exist
     if (!settings.generations || !Array.isArray(settings.generations)) {
         settings.generations = [{ ...DEFAULT_GENERATION }];
     }
 
-    // Load global settings
     $('#dpm_trigger_mode').val(settings.trigger_mode || 'manual').trigger('input');
     $('#dpm_message_interval').val(settings.message_interval || 3).trigger('input');
     $('#dpm_generate_on_user_message').prop('checked', settings.generate_on_user_message !== false).trigger('input');
@@ -145,7 +245,6 @@ async function loadSettings() {
     $('#dpm_enabled').prop('checked', settings.enabled !== false).trigger('input');
     $('#dpm_regeneration_mode').val(settings.regeneration_mode || 'normal').trigger('input');
 
-    // Initialize tracking to current state to prevent processing existing messages on load
     const context = getContext();
     const chat = context.chat;
     const chatId = getCurrentChatId();
@@ -157,58 +256,22 @@ async function loadSettings() {
         lastProcessedMessage = `${currentIndex}-${currentMessage.mes}`;
         console.log(`[${MODULE_NAME}] Initialized tracking at message index ${currentIndex}`);
 
-        // Cleanup orphaned memos
         const validIndices = chat.map((_, idx) => idx);
         cleanupMemoCache(chatId, validIndices);
-
-        // Restore prompts from cache for current chat
-        const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
-        for (const gen of promptGenerations) {
-            try {
-                const lastSwipeId = currentMessage.swipe_id || 0;
-                const lastMemo = getMemoFromCache(chatId, currentIndex, lastSwipeId);
-
-                if (lastMemo) {
-                    await updatePromptContent(gen.prompt_name, lastMemo);
-                    console.log(`[${MODULE_NAME}] Restored prompt "${gen.prompt_name}" from cache on load`);
-                } else {
-                    console.log(`[${MODULE_NAME}] No cached memo for "${gen.prompt_name}" on load`);
-                }
-            } catch (error) {
-                console.error(`[${MODULE_NAME}] Failed to restore prompt on load:`, error);
-            }
-        }
-    } else {
-        // Empty chat - clear all prompts
-        console.log(`[${MODULE_NAME}] Empty chat on load, clearing prompts`);
-        const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
-        for (const gen of promptGenerations) {
-            try {
-                await updatePromptContent(gen.prompt_name, '');
-            } catch (error) {
-                console.error(`[${MODULE_NAME}] Failed to clear prompt on load:`, error);
-            }
-        }
     }
 
-    // Render generations list
+    await restorePromptsForChat(chatId, chat);
     renderGenerationsList();
 
-    if (settings.show_monitor !== false) {
-        showPromptMonitor();
-    }
+    if (settings.show_monitor !== false) showPromptMonitor();
 
     setTimeout(() => {
         const prompts = oai_settings?.prompts;
-        if (prompts && Array.isArray(prompts)) {
+        if (Array.isArray(prompts)) {
             console.log(`[${MODULE_NAME}] Available prompts:`,
                 prompts.map(p => ({ name: p?.name, identifier: p?.identifier })));
         } else {
-            console.warn(`[${MODULE_NAME}] Could not access prompts. Structure:`, {
-                oai_settings_exists: !!oai_settings,
-                prompts_type: typeof oai_settings?.prompts,
-                prompts_is_array: Array.isArray(oai_settings?.prompts)
-            });
+            console.warn(`[${MODULE_NAME}] Could not access prompts`);
         }
     }, 1000);
 }
@@ -218,13 +281,8 @@ function onGlobalInput(event) {
 
     if (id === 'show_monitor' || id === 'generate_on_user_message' || id === 'enabled') {
         settings[id] = $(event.target).prop('checked');
-
         if (id === 'show_monitor') {
-            if (settings[id]) {
-                showPromptMonitor();
-            } else {
-                hidePromptMonitor();
-            }
+            settings[id] ? showPromptMonitor() : hidePromptMonitor();
         }
     } else if (id === 'message_interval') {
         const value = parseInt($(event.target).val());
@@ -237,6 +295,10 @@ function onGlobalInput(event) {
     saveSettingsDebounced();
 }
 
+// ---------------------------------------------------------------------------
+// Generations list UI
+// ---------------------------------------------------------------------------
+
 function renderGenerationsList() {
     const $container = $('#dpm_generations_list');
     $container.empty();
@@ -245,12 +307,7 @@ function renderGenerationsList() {
         settings.generations = [{ ...DEFAULT_GENERATION }];
     }
 
-    settings.generations.forEach((gen, index) => {
-        const $item = createGenerationItem(gen, index);
-        $container.append($item);
-    });
-
-    // Update monitor if visible
+    settings.generations.forEach((gen, index) => $container.append(createGenerationItem(gen, index)));
     updatePromptMonitor();
 }
 
@@ -263,12 +320,8 @@ function createGenerationItem(gen, index) {
             <div class="dpm-gen-header">
                 <div class="dpm-gen-controls">
                     <input type="checkbox" class="dpm-gen-enabled" ${gen.enabled ? 'checked' : ''} />
-                    <button class="dpm-gen-move" data-direction="up" title="Move Up">
-                        <i class="fa-solid fa-arrow-up"></i>
-                    </button>
-                    <button class="dpm-gen-move" data-direction="down" title="Move Down">
-                        <i class="fa-solid fa-arrow-down"></i>
-                    </button>
+                    <button class="dpm-gen-move" data-direction="up" title="Move Up"><i class="fa-solid fa-arrow-up"></i></button>
+                    <button class="dpm-gen-move" data-direction="down" title="Move Down"><i class="fa-solid fa-arrow-down"></i></button>
                 </div>
                 <div class="dpm-gen-title">
                     <i class="fa-solid ${modeIcon}"></i>
@@ -276,12 +329,8 @@ function createGenerationItem(gen, index) {
                     <span class="dpm-gen-mode-label">${modeLabel}</span>
                 </div>
                 <div class="dpm-gen-actions">
-                    <button class="dpm-gen-toggle" title="Expand/Collapse">
-                        <i class="fa-solid fa-chevron-down"></i>
-                    </button>
-                    <button class="dpm-gen-delete" title="Delete">
-                        <i class="fa-solid fa-trash"></i>
-                    </button>
+                    <button class="dpm-gen-toggle" title="Expand/Collapse"><i class="fa-solid fa-chevron-down"></i></button>
+                    <button class="dpm-gen-delete" title="Delete"><i class="fa-solid fa-trash"></i></button>
                 </div>
             </div>
             <div class="dpm-gen-body" style="display: none;">
@@ -293,45 +342,32 @@ function createGenerationItem(gen, index) {
                     </select>
                     <small>Choose whether to edit a completion preset prompt or append to the last message</small>
                 </div>
-                
                 <div class="dpm-gen-field dpm-gen-prompt-field" style="${gen.mode === 'message' ? 'display: none;' : ''}">
                     <label>Target Prompt Name</label>
                     <input type="text" class="dpm-gen-prompt-name" value="${gen.prompt_name || 'Main Prompt'}" placeholder="Main Prompt" />
                     <small>Name of the prompt from Chat Completion Presets to modify</small>
                 </div>
-                
                 <div class="dpm-gen-field">
                     <label>LLM Prompt Template</label>
                     <textarea class="dpm-gen-llm-prompt" rows="6">${gen.llm_prompt || DEFAULT_GENERATION.llm_prompt}</textarea>
                     <small>Template for generating content. Use tags like {all_messages}, {prompt}, etc.</small>
                 </div>
-                
                 <div class="dpm-gen-field">
-                    <label>
-                        <input type="checkbox" class="dpm-gen-use-raw" ${gen.use_raw ? 'checked' : ''} />
-                        Use Raw Generation
-                    </label>
+                    <label><input type="checkbox" class="dpm-gen-use-raw" ${gen.use_raw ? 'checked' : ''} /> Use Raw Generation</label>
                     <small>Bypass system instructions and character card</small>
                 </div>
-                
                 <div class="dpm-gen-field">
-                    <label>
-                        <input type="checkbox" class="dpm-gen-use-custom" ${gen.use_custom_generate_raw ? 'checked' : ''} />
-                        Use Custom Raw Generation Method
-                    </label>
+                    <label><input type="checkbox" class="dpm-gen-use-custom" ${gen.use_custom_generate_raw ? 'checked' : ''} /> Use Custom Raw Generation Method</label>
                     <small>Custom method with stopping strings</small>
                 </div>
-                
                 <div class="dpm-gen-field">
                     <label>Custom Model (Optional)</label>
                     <input type="text" class="dpm-gen-custom-model" value="${gen.custom_model || ''}" placeholder="Leave blank to use current model" />
                 </div>
-                
                 <div class="dpm-gen-field">
                     <label>Custom Parameters (Optional)</label>
                     <input type="text" class="dpm-gen-custom-params" value="${gen.custom_parameters || ''}" placeholder="Leave blank to use current parameters" />
                 </div>
-                
                 <div class="dpm-gen-field">
                     <label>Messages to Include</label>
                     <input type="number" class="dpm-gen-message-count" min="0" max="50" value="${gen.message_count || 5}" />
@@ -341,92 +377,64 @@ function createGenerationItem(gen, index) {
         </div>
     `);
 
-    // Bind events
     $item.find('.dpm-gen-enabled').on('change', function () {
         gen.enabled = $(this).prop('checked');
         saveGenerations();
     });
-
     $item.find('.dpm-gen-name').on('input', function () {
         gen.name = $(this).val();
         saveGenerations();
     });
-
     $item.find('.dpm-gen-mode').on('change', function () {
         gen.mode = $(this).val();
-        const $promptField = $item.find('.dpm-gen-prompt-field');
-        const modeLabel = gen.mode === 'prompt' ? 'Edit Prompt' : 'Edit Message';
-        const modeIcon = gen.mode === 'prompt' ? 'fa-file-text' : 'fa-comment';
-
-        if (gen.mode === 'message') {
-            $promptField.hide();
-        } else {
-            $promptField.show();
-        }
-
-        $item.find('.dpm-gen-mode-label').text(modeLabel);
-        $item.find('.dpm-gen-title i').attr('class', `fa-solid ${modeIcon}`);
+        $item.find('.dpm-gen-prompt-field').toggle(gen.mode === 'prompt');
+        $item.find('.dpm-gen-mode-label').text(gen.mode === 'prompt' ? 'Edit Prompt' : 'Edit Message');
+        $item.find('.dpm-gen-title i').attr('class', `fa-solid ${gen.mode === 'prompt' ? 'fa-file-text' : 'fa-comment'}`);
         saveGenerations();
     });
-
     $item.find('.dpm-gen-prompt-name').on('input', function () {
         gen.prompt_name = $(this).val();
         saveGenerations();
     });
-
     $item.find('.dpm-gen-llm-prompt').on('input', function () {
         gen.llm_prompt = $(this).val();
         saveGenerations();
     });
-
     $item.find('.dpm-gen-use-raw').on('change', function () {
         gen.use_raw = $(this).prop('checked');
         saveGenerations();
     });
-
     $item.find('.dpm-gen-use-custom').on('change', function () {
         gen.use_custom_generate_raw = $(this).prop('checked');
         saveGenerations();
     });
-
     $item.find('.dpm-gen-custom-model').on('input', function () {
         gen.custom_model = $(this).val();
         saveGenerations();
     });
-
     $item.find('.dpm-gen-custom-params').on('input', function () {
         gen.custom_parameters = $(this).val();
         saveGenerations();
     });
-
     $item.find('.dpm-gen-message-count').on('input', function () {
         const value = parseInt($(this).val());
         gen.message_count = (!isNaN(value) && value >= 0) ? value : 5;
         saveGenerations();
     });
-
     $item.find('.dpm-gen-toggle').on('click', function () {
-        const $body = $item.find('.dpm-gen-body');
-        const $icon = $(this).find('i');
-        $body.slideToggle(200);
-        $icon.toggleClass('fa-chevron-down fa-chevron-up');
+        $item.find('.dpm-gen-body').slideToggle(200);
+        $(this).find('i').toggleClass('fa-chevron-down fa-chevron-up');
     });
-
     $item.find('.dpm-gen-delete').on('click', function () {
-        if (settings.generations.length <= 1) {
-            toastr.warning('Cannot delete the last generation');
-            return;
-        }
+        if (settings.generations.length <= 1) { toastr.warning('Cannot delete the last generation'); return; }
         if (confirm('Are you sure you want to delete this generation?')) {
             settings.generations.splice(index, 1);
             saveGenerations();
             renderGenerationsList();
         }
     });
-
     $item.find('.dpm-gen-move').on('click', function () {
-        const direction = $(this).data('direction');
-        moveGeneration(index, direction);
+        moveGeneration(index, $(this).data('direction'));
     });
 
     return $item;
@@ -434,14 +442,10 @@ function createGenerationItem(gen, index) {
 
 function moveGeneration(index, direction) {
     const newIndex = direction === 'up' ? index - 1 : index + 1;
+    if (newIndex < 0 || newIndex >= settings.generations.length) return;
 
-    if (newIndex < 0 || newIndex >= settings.generations.length) {
-        return;
-    }
-
-    const temp = settings.generations[index];
-    settings.generations[index] = settings.generations[newIndex];
-    settings.generations[newIndex] = temp;
+    [settings.generations[index], settings.generations[newIndex]] =
+        [settings.generations[newIndex], settings.generations[index]];
 
     saveGenerations();
     renderGenerationsList();
@@ -453,120 +457,26 @@ function saveGenerations() {
     updatePromptMonitor();
 }
 
-function getPromptByName(promptName) {
-    try {
-        const prompts = oai_settings?.prompts;
-
-        if (!prompts || !Array.isArray(prompts)) {
-            console.warn(`[${MODULE_NAME}] Prompts array not accessible. oai_settings.prompts:`, oai_settings?.prompts);
-            return null;
-        }
-
-        console.log(`[${MODULE_NAME}] Searching for prompt "${promptName}" in ${prompts.length} prompts`);
-
-        const prompt = prompts.find(p => p && p.name === promptName);
-
-        if (prompt) {
-            console.log(`[${MODULE_NAME}] Found prompt:`, prompt);
-            return {
-                identifier: prompt.identifier,
-                content: prompt.content || '',
-                promptData: prompt
-            };
-        }
-
-        console.warn(`[${MODULE_NAME}] Prompt "${promptName}" not found. Available prompts:`,
-            prompts.map(p => p?.name).filter(Boolean));
-        return null;
-    } catch (error) {
-        console.error(`[${MODULE_NAME}] Error accessing prompts:`, error);
-        return null;
-    }
-}
-
-function updatePromptContent(promptName, newContent) {
-    try {
-        const prompts = oai_settings?.prompts;
-
-        if (!prompts || !Array.isArray(prompts)) {
-            throw new Error('Prompts array not accessible');
-        }
-
-        const prompt = prompts.find(p => p && p.name === promptName);
-
-        if (!prompt) {
-            throw new Error(`Prompt "${promptName}" not found`);
-        }
-
-        prompt.content = newContent;
-
-        const presetName = oai_settings.preset_settings_openai;
-
-        return savePresetWithPrompts(presetName, oai_settings);
-
-    } catch (error) {
-        console.error(`[${MODULE_NAME}] Error updating prompt:`, error);
-        throw error;
-    }
-}
-
-async function savePresetWithPrompts(presetName, settings) {
-    try {
-        const response = await fetch('/api/presets/save', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                apiId: 'openai',
-                name: presetName,
-                preset: {
-                    prompts: settings.prompts,
-                },
-            }),
-        });
-
-        if (!response.ok) {
-            throw new Error(`Failed to save preset: ${response.status}`);
-        }
-
-        const data = await response.json();
-        console.log(`[${MODULE_NAME}] Successfully saved preset "${presetName}"`);
-
-        eventSource.emit(event_types.SETTINGS_UPDATED);
-
-        return true;
-    } catch (error) {
-        console.error(`[${MODULE_NAME}] Error saving preset:`, error);
-        throw error;
-    }
-}
+// ---------------------------------------------------------------------------
+// Prompt monitor UI
+// ---------------------------------------------------------------------------
 
 function showPromptMonitor() {
-    if (promptMonitorWindow) {
-        return;
-    }
+    if (promptMonitorWindow) return;
 
-    const monitorHtml = `
+    $('body').append(`
         <div id="dpm_monitor_window">
             <div class="dpm-monitor-header" id="dpm_monitor_header">
-                <div class="dpm-monitor-title">
-                    <i class="fa-solid fa-eye"></i>
-                    <span>Generations Monitor</span>
-                </div>
+                <div class="dpm-monitor-title"><i class="fa-solid fa-eye"></i><span>Generations Monitor</span></div>
                 <div class="dpm-monitor-controls">
-                    <button class="dpm-monitor-close" id="dpm_monitor_close" title="Close">
-                        <i class="fa-solid fa-times"></i>
-                    </button>
+                    <button class="dpm-monitor-close" id="dpm_monitor_close" title="Close"><i class="fa-solid fa-times"></i></button>
                 </div>
             </div>
-            <div class="dpm-monitor-body" id="dpm_monitor_body">
-                <div class="dpm-loading">Loading generations...</div>
-            </div>
+            <div class="dpm-monitor-body" id="dpm_monitor_body"><div class="dpm-loading">Loading generations...</div></div>
         </div>
-    `;
+    `);
 
-    $('body').append(monitorHtml);
     promptMonitorWindow = $('#dpm_monitor_window');
-
     makeMonitorDraggable();
     bindMonitorEvents();
     updatePromptMonitor();
@@ -582,49 +492,28 @@ function hidePromptMonitor() {
 function makeMonitorDraggable() {
     const $window = $('#dpm_monitor_window');
     const $header = $('#dpm_monitor_header');
+    let isDragging = false, startX, startY, initialLeft, initialTop;
 
-    let isDragging = false;
-    let startX, startY, initialLeft, initialTop;
-
-    $header.css('cursor', 'move');
-
-    $header.on('mousedown', (e) => {
-        if ($(e.target).closest('.dpm-monitor-close').length > 0) {
-            return;
-        }
-
+    $header.css('cursor', 'move').on('mousedown', (e) => {
+        if ($(e.target).closest('.dpm-monitor-close').length > 0) return;
         isDragging = true;
         startX = e.clientX;
         startY = e.clientY;
-
         const rect = $window[0].getBoundingClientRect();
         initialLeft = rect.left;
         initialTop = rect.top;
-
         $window.addClass('dragging');
         e.preventDefault();
     });
 
     $(document).on('mousemove', (e) => {
         if (!isDragging) return;
-
-        const deltaX = e.clientX - startX;
-        const deltaY = e.clientY - startY;
-
-        const newLeft = Math.max(0, Math.min(window.innerWidth - $window.outerWidth(), initialLeft + deltaX));
-        const newTop = Math.max(0, Math.min(window.innerHeight - $window.outerHeight(), initialTop + deltaY));
-
         $window.css({
-            left: newLeft + 'px',
-            top: newTop + 'px'
+            left: Math.max(0, Math.min(window.innerWidth - $window.outerWidth(), initialLeft + (e.clientX - startX))) + 'px',
+            top: Math.max(0, Math.min(window.innerHeight - $window.outerHeight(), initialTop + (e.clientY - startY))) + 'px',
         });
-    });
-
-    $(document).on('mouseup', () => {
-        if (isDragging) {
-            isDragging = false;
-            $window.removeClass('dragging');
-        }
+    }).on('mouseup', () => {
+        if (isDragging) { isDragging = false; $window.removeClass('dragging'); }
     });
 }
 
@@ -665,11 +554,10 @@ function updatePromptMonitor() {
         `);
 
         $body.append($genDisplay);
+        const $content = $genDisplay.find(`#dpm_monitor_gen_${index}`);
 
         if (gen.mode === 'prompt') {
             const promptInfo = getPromptByName(gen.prompt_name);
-            const $content = $genDisplay.find(`#dpm_monitor_gen_${index}`);
-
             if (promptInfo) {
                 const content = promptInfo.content || '(empty)';
                 $content.html(`
@@ -681,12 +569,9 @@ function updatePromptMonitor() {
                 $content.html('<span class="dpm-error">Prompt not found</span>');
             }
         } else {
-            // For message mode, show a placeholder
-            const $content = $genDisplay.find(`#dpm_monitor_gen_${index}`);
             $content.html(`
                 <div class="dpm-monitor-message-info">
-                    <i class="fa-solid fa-info-circle"></i>
-                    Will append generated content to last message
+                    <i class="fa-solid fa-info-circle"></i> Will append generated content to last message
                 </div>
             `);
         }
@@ -699,188 +584,120 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+// ---------------------------------------------------------------------------
+// Audio
+// ---------------------------------------------------------------------------
+
 function playNotificationSound() {
     try {
-        const audio = new Audio();
-        audio.src = `${extensionFolderPath}/notification.mp3`;
+        const audio = new Audio(`${extensionFolderPath}/notification.mp3`);
         audio.volume = 0.5;
-        audio.play().catch(error => {
-            console.log(`[${MODULE_NAME}] Could not play notification sound:`, error);
-        });
-    } catch (error) {
-        console.log(`[${MODULE_NAME}] Audio notification failed:`, error);
+        audio.play().catch(e => console.log(`[${MODULE_NAME}] Could not play notification sound:`, e));
+    } catch (e) {
+        console.log(`[${MODULE_NAME}] Audio notification failed:`, e);
     }
 }
 
+// ---------------------------------------------------------------------------
+// Message helpers
+// ---------------------------------------------------------------------------
+
 function getVisibleMessages(chat, count) {
-    const visibleMessages = [];
-    const maxMessages = count === 0 ? Infinity : count;
+    const visible = [];
+    const max = count === 0 ? Infinity : count;
 
-    for (let i = chat.length - 1; i >= 0 && visibleMessages.length < maxMessages; i--) {
-        const message = chat[i];
-
-        if (isMessageInvisible(message)) {
-            continue;
+    for (let i = chat.length - 1; i >= 0 && visible.length < max; i--) {
+        if (!isMessageInvisible(chat[i])) {
+            visible.unshift({ name: chat[i].name, mes: chat[i].mes });
         }
-
-        visibleMessages.unshift({
-            name: message.name,
-            mes: message.mes
-        });
     }
-
-    return visibleMessages;
+    return visible;
 }
 
 function isMessageInvisible(message) {
-    return message.is_system ||
-        message.extra?.isTemporary ||
-        message.extra?.invisible;
+    return message.is_system || message.extra?.isTemporary || message.extra?.invisible;
 }
 
 function formatMessages(messages) {
-    return messages.map(msg => `${msg.name}: ${msg.mes}`).join('\n\n');
+    return messages.map(m => `${m.name}: ${m.mes}`).join('\n\n');
 }
 
 function replaceMessageTags(template, messages, promptContent = '') {
-    let result = template;
-
-    result = result.replace(/{all_messages}/g, formatMessages(messages));
-    result = result.replace(/{description}/g, formatMessages(messages));
-
-    if (messages.length > 1) {
-        result = result.replace(/{previous_messages}/g, formatMessages(messages.slice(0, -1)));
-    } else {
-        result = result.replace(/{previous_messages}/g, '');
-    }
-
-    if (messages.length > 2) {
-        result = result.replace(/{previous_messages2}/g, formatMessages(messages.slice(0, -2)));
-    } else {
-        result = result.replace(/{previous_messages2}/g, '');
-    }
-
-    if (messages.length > 0) {
-        const lastMessage = messages[messages.length - 1];
-        result = result.replace(/{message_last}/g, `${lastMessage.name}: ${lastMessage.mes}`);
-    } else {
-        result = result.replace(/{message_last}/g, '');
-    }
-
-    if (messages.length > 1) {
-        const beforeLastMessage = messages[messages.length - 2];
-        result = result.replace(/{message_beforelast}/g, `${beforeLastMessage.name}: ${beforeLastMessage.mes}`);
-    } else {
-        result = result.replace(/{message_beforelast}/g, '');
-    }
-
-    result = result.replace(/{prompt}/g, promptContent);
-
+    let result = template
+        .replace(/{all_messages}/g, formatMessages(messages))
+        .replace(/{description}/g, formatMessages(messages))
+        .replace(/{previous_messages}/g, messages.length > 1 ? formatMessages(messages.slice(0, -1)) : '')
+        .replace(/{previous_messages2}/g, messages.length > 2 ? formatMessages(messages.slice(0, -2)) : '')
+        .replace(/{message_last}/g, messages.length > 0 ? `${messages.at(-1).name}: ${messages.at(-1).mes}` : '')
+        .replace(/{message_beforelast}/g, messages.length > 1 ? `${messages.at(-2).name}: ${messages.at(-2).mes}` : '')
+        .replace(/{prompt}/g, promptContent);
     return result;
 }
 
 function parsePromptTemplate(template, messages, promptContent = '') {
-    const processedTemplate = replaceMessageTags(template, messages, promptContent);
-
+    const processed = replaceMessageTags(template, messages, promptContent);
     const messageRegex = /\[(system|user|assistant)\](.*?)\[\/\1\]/gs;
-
-    const parsedMessages = [];
-    let hasStructuredMessages = false;
+    const parsed = [];
     let match;
 
-    while ((match = messageRegex.exec(processedTemplate)) !== null) {
-        hasStructuredMessages = true;
-        const role = match[1];
-        const content = match[2].trim();
-
-        parsedMessages.push({
-            role: role,
-            content: content
-        });
+    while ((match = messageRegex.exec(processed)) !== null) {
+        parsed.push({ role: match[1], content: match[2].trim() });
     }
 
-    if (!hasStructuredMessages) {
-        const hasMessageTags = /{(all_messages|previous_messages|previous_messages2|message_last|message_beforelast|description|prompt)}/.test(processedTemplate);
+    if (parsed.length > 0) return parsed;
 
-        if (hasMessageTags) {
-            const lines = processedTemplate.split('\n').filter(line => line.trim());
-            if (lines.length > 1) {
-                parsedMessages.push({
-                    role: 'system',
-                    content: lines[0]
-                });
-                parsedMessages.push({
-                    role: 'user',
-                    content: lines.slice(1).join('\n')
-                });
-            } else {
-                parsedMessages.push({
-                    role: 'user',
-                    content: processedTemplate
-                });
-            }
-        } else {
-            parsedMessages.push({
-                role: 'system',
-                content: processedTemplate || 'Generate a concise instruction based on the conversation.'
-            });
-            parsedMessages.push({
-                role: 'user',
-                content: formatMessages(messages)
-            });
-        }
+    const hasMessageTags = /{(all_messages|previous_messages|previous_messages2|message_last|message_beforelast|description|prompt)}/.test(processed);
+    if (hasMessageTags) {
+        const lines = processed.split('\n').filter(l => l.trim());
+        return lines.length > 1
+            ? [{ role: 'system', content: lines[0] }, { role: 'user', content: lines.slice(1).join('\n') }]
+            : [{ role: 'user', content: processed }];
     }
 
-    return parsedMessages;
+    return [
+        { role: 'system', content: processed || 'Generate a concise instruction based on the conversation.' },
+        { role: 'user', content: formatMessages(messages) },
+    ];
 }
+
+// ---------------------------------------------------------------------------
+// Generation execution
+// ---------------------------------------------------------------------------
 
 async function executeGeneration(gen) {
     const context = getContext();
     const chat = context.chat;
 
-    if (!Array.isArray(chat) || chat.length === 0) {
-        throw new Error(`No chat messages available.`);
-    }
+    if (!Array.isArray(chat) || chat.length === 0) throw new Error('No chat messages available.');
 
-    const messageCount = gen.message_count ?? 5;
-    const visibleMessages = getVisibleMessages(chat, messageCount);
+    const visibleMessages = getVisibleMessages(chat, gen.message_count ?? 5);
+    if (visibleMessages.length === 0) throw new Error('No visible messages found.');
 
-    if (visibleMessages.length === 0) {
-        throw new Error(`No visible messages found.`);
-    }
-
-    // For prompt mode, get the appropriate memo from cache
     let promptContent = '';
-    if (gen.mode === 'prompt') {
-        const promptInfo = getPromptByName(gen.prompt_name);
-        if (!promptInfo) {
-            throw new Error(`Prompt "${gen.prompt_name}" not found.`);
-        }
 
-        // Get the current memo based on regeneration mode
+    if (gen.mode === 'prompt') {
+        if (!getPromptByName(gen.prompt_name)) throw new Error(`Prompt "${gen.prompt_name}" not found.`);
+
         const chatId = getCurrentChatId();
-        const currentMessageIndex = chat.length - 1;
-        const currentMessage = chat[currentMessageIndex];
+        const currentIndex = chat.length - 1;
+        const currentMessage = chat[currentIndex];
         const currentSwipeId = currentMessage.swipe_id || 0;
         const regenerationMode = settings.regeneration_mode || 'normal';
 
         if (regenerationMode === 'safe') {
-            // Safe mode: Use memo from previous message
-            promptContent = getPreviousMessageMemo(chatId, currentMessageIndex) || '';
-            console.log(`[${MODULE_NAME}] Safe mode: Using previous message memo`);
+            // Safe mode: always use the memo from before this message's position.
+            promptContent = findLatestMemoBeforeIndex(chatId, currentIndex) ?? '';
+            console.log(`[${MODULE_NAME}] Safe mode: Using previous-message memo`);
         } else {
-            // Normal/Aggressive mode: Check if this is a regeneration
-            const existingMemo = getMemoFromCache(chatId, currentMessageIndex, currentSwipeId);
-
+            const existingMemo = getMemoFromCache(chatId, currentIndex, currentSwipeId);
             if (existingMemo) {
-                // This swipe already has a memo (we're navigating back to it)
+                // Navigating back to an already-processed swipe — reuse its memo.
                 promptContent = existingMemo;
                 console.log(`[${MODULE_NAME}] Using cached memo for swipe ${currentSwipeId}`);
             } else {
-                // This swipe doesn't have a memo yet - it's a NEW regeneration or first message
-                // ALWAYS use previous message's memo (or empty if index 0)
-                promptContent = getPreviousMessageMemo(chatId, currentMessageIndex) || '';
-                console.log(`[${MODULE_NAME}] New swipe ${currentSwipeId}: Using previous message memo (or empty if first message)`);
+                // Brand-new swipe/regeneration — seed with the most recent prior memo.
+                promptContent = findLatestMemoBeforeIndex(chatId, currentIndex) ?? '';
+                console.log(`[${MODULE_NAME}] New swipe ${currentSwipeId}: seeding from previous memo`);
             }
         }
     }
@@ -888,405 +705,239 @@ async function executeGeneration(gen) {
     let newContent;
 
     if (gen.use_raw) {
-        const instructionTemplate = gen.llm_prompt || DEFAULT_GENERATION.llm_prompt;
-        const parsedMessages = parsePromptTemplate(instructionTemplate, visibleMessages, promptContent);
-
-        let systemPrompt = '';
-        let prompt;
-
-        if (parsedMessages.length > 0) {
-            const hasSystemMessages = parsedMessages.some(msg => msg.role === 'system');
-
-            if (hasSystemMessages) {
-                const firstSystemMessage = parsedMessages.find(msg => msg.role === 'system');
-                systemPrompt = firstSystemMessage.content;
-
-                const chatMessages = [];
-                let firstSystemFound = false;
-
-                for (const msg of parsedMessages) {
-                    if (msg.role === 'system' && !firstSystemFound) {
-                        firstSystemFound = true;
-                        continue;
-                    }
-
-                    chatMessages.push({
-                        role: msg.role,
-                        content: msg.content
-                    });
-                }
-
-                prompt = chatMessages;
-            } else {
-                systemPrompt = '';
-                prompt = parsedMessages.map(msg => ({
-                    role: msg.role,
-                    content: msg.content
-                }));
-            }
-        } else {
-            systemPrompt = 'Generate a concise instruction based on the conversation.';
-            prompt = formatMessages(visibleMessages);
-        }
+        const parsedMessages = parsePromptTemplate(gen.llm_prompt || DEFAULT_GENERATION.llm_prompt, visibleMessages, promptContent);
+        const firstSystem = parsedMessages.find(m => m.role === 'system');
+        const systemPrompt = firstSystem?.content ?? '';
+        const chatMessages = firstSystem
+            ? parsedMessages.filter(m => m !== firstSystem).map(m => ({ role: m.role, content: m.content }))
+            : parsedMessages.map(m => ({ role: m.role, content: m.content }));
+        const prompt = chatMessages.length > 0 ? chatMessages : formatMessages(visibleMessages);
 
         try {
-            if (gen.use_custom_generate_raw === true) {
-                const result = await generateRawWithStops({
-                    systemPrompt: systemPrompt,
-                    prompt: prompt,
+            if (gen.use_custom_generate_raw) {
+                newContent = await generateRawWithStops({
+                    systemPrompt,
+                    prompt,
                     prefill: '',
-                    stopStrings: [
-                        '<|im_end|>',
-                        '</s>',
-                        '[/INST]',
-                        '<|endoftext|>',
-                        '<END>'
-                    ],
+                    stopStrings: ['<|im_end|>', '</s>', '[/INST]', '<|endoftext|>', '<END>'],
                 });
-                console.log(`[${MODULE_NAME}] generateRawWithStops result:`, result);
-                newContent = result;
             } else {
-                const result = await generateRaw({
-                    systemPrompt: systemPrompt,
-                    prompt: prompt,
-                    prefill: ''
-                });
-                console.log(`[${MODULE_NAME}] generateRaw result:`, result);
-                newContent = result;
+                newContent = await generateRaw({ systemPrompt, prompt, prefill: '' });
             }
         } catch (error) {
-            const methodName = gen.use_custom_generate_raw ? "generateRawWithStops" : "generateRaw";
-            console.error(`[${MODULE_NAME}] ${methodName} failed:`, error);
+            const method = gen.use_custom_generate_raw ? 'generateRawWithStops' : 'generateRaw';
+            console.error(`[${MODULE_NAME}] ${method} failed:`, error);
             throw error;
         }
     } else {
         let llmPrompt = gen.llm_prompt || DEFAULT_GENERATION.llm_prompt;
-
-        if (/{(all_messages|previous_messages|previous_messages2|message_last|message_beforelast|prompt)}/.test(llmPrompt)) {
-            llmPrompt = replaceMessageTags(llmPrompt, visibleMessages, promptContent);
-        } else {
-            llmPrompt = substituteParams(llmPrompt);
-        }
+        llmPrompt = /{(all_messages|previous_messages|previous_messages2|message_last|message_beforelast|prompt)}/.test(llmPrompt)
+            ? replaceMessageTags(llmPrompt, visibleMessages, promptContent)
+            : substituteParams(llmPrompt);
 
         const { generateQuietPrompt } = await import('../../../../script.js');
         newContent = await generateQuietPrompt(llmPrompt);
     }
 
-    // Clean up the generated content
-    newContent = newContent
-        .replace(/\*/g, "")
-        .replace(/\"/g, "")
-        .replace(/`/g, "")
-        .trim();
-
-    return newContent;
+    return newContent.replace(/\*/g, '').replace(/"/g, '').replace(/`/g, '').trim();
 }
 
 async function applyGeneration(gen, content) {
     if (gen.mode === 'prompt') {
-        // Update prompt
         await updatePromptContent(gen.prompt_name, content);
 
-        // Store memo in cache
         const context = getContext();
         const chat = context.chat;
         const chatId = getCurrentChatId();
         const messageIndex = chat.length - 1;
-        const currentMessage = chat[messageIndex];
-        const swipeId = currentMessage.swipe_id || 0;
+        const swipeId = chat[messageIndex].swipe_id || 0;
 
         setMemoInCache(chatId, messageIndex, swipeId, content);
-
         console.log(`[${MODULE_NAME}] Updated prompt "${gen.prompt_name}" and cached memo`);
     } else {
-        // Append to last message
         const context = getContext();
         const chat = context.chat;
+        if (!chat || chat.length === 0) throw new Error('No messages to append to');
 
-        if (!chat || chat.length === 0) {
-            throw new Error('No messages to append to');
-        }
-
-        const lastMessageIndex = chat.length - 1;
-        const lastMessage = chat[lastMessageIndex];
+        const lastIndex = chat.length - 1;
+        const lastMessage = chat[lastIndex];
         lastMessage.mes += '\n\n' + content;
+        lastProcessedMessage = `${lastIndex}-${lastMessage.mes}`;
 
-        // Update the lastProcessedMessage to include the new content
-        // This prevents the modified message from being processed again
-        lastProcessedMessage = `${lastMessageIndex}-${lastMessage.mes}`;
-
-        // Directly update the DOM without triggering events
-        const $messageElement = $(`#chat .mes[mesid="${lastMessageIndex}"]`);
-        if ($messageElement.length > 0) {
-            // Find the message text container and update it
-            const $mesText = $messageElement.find('.mes_text');
-            if ($mesText.length > 0) {
-                // Use SillyTavern's message formatting
-                const { messageFormatting } = await import('../../../../script.js');
-                const formattedContent = messageFormatting(lastMessage.mes, lastMessage.name, lastMessage.is_system, lastMessage.is_user);
-                $mesText.html(formattedContent);
-            }
+        const $mesText = $(`#chat .mes[mesid="${lastIndex}"]`).find('.mes_text');
+        if ($mesText.length > 0) {
+            const { messageFormatting } = await import('../../../../script.js');
+            $mesText.html(messageFormatting(lastMessage.mes, lastMessage.name, lastMessage.is_system, lastMessage.is_user));
         }
 
-        // Save chat without triggering events
         const { saveChatConditional } = await import('../../../../script.js');
         await saveChatConditional();
-
-        console.log(`[${MODULE_NAME}] Appended content to last message and refreshed UI`);
+        console.log(`[${MODULE_NAME}] Appended content to last message`);
     }
 }
 
+/** Execute all enabled generations and return result summary. */
 async function generateAndUpdatePrompt() {
-    const enabledGenerations = settings.generations.filter(gen => gen.enabled);
+    const enabledGenerations = (settings.generations ?? []).filter(gen => gen.enabled);
+    if (enabledGenerations.length === 0) throw new Error('No enabled generations');
 
-    if (enabledGenerations.length === 0) {
-        throw new Error('No enabled generations');
-    }
-
-    const results = [];
-
-    for (const gen of enabledGenerations) {
-        try {
-            console.log(`[${MODULE_NAME}] Executing generation: ${gen.name}`);
+    const results = await Promise.allSettled(
+        enabledGenerations.map(async gen => {
             const content = await executeGeneration(gen);
             await applyGeneration(gen, content);
-            results.push({ name: gen.name, success: true });
-        } catch (error) {
-            console.error(`[${MODULE_NAME}] Generation "${gen.name}" failed:`, error);
-            results.push({ name: gen.name, success: false, error: error.message });
-        }
-    }
+            return gen.name;
+        })
+    );
 
-    // Update monitor display
     updatePromptMonitor();
-
-    // Play notification sound
     playNotificationSound();
 
-    return results;
+    return results.map((r, i) =>
+        r.status === 'fulfilled'
+            ? { name: enabledGenerations[i].name, success: true }
+            : { name: enabledGenerations[i].name, success: false, error: r.reason?.message }
+    );
 }
+
+/**
+ * Shared runner used by both every_message and interval trigger paths.
+ * Sets / clears isProcessing and surfaces toastr feedback.
+ */
+async function runGenerations() {
+    isProcessing = true;
+    try {
+        const results = await generateAndUpdatePrompt();
+        const successCount = results.filter(r => r.success).length;
+        toastr.success(`${successCount}/${results.length} generations completed`);
+    } catch (error) {
+        console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
+        toastr.error(`Failed to update: ${error.message}`);
+    } finally {
+        setTimeout(() => {
+            isProcessing = false;
+            console.log(`[${MODULE_NAME}] Processing flag cleared`);
+        }, 500);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Event handlers
+// ---------------------------------------------------------------------------
 
 async function onMessageDeleted(messageIndex) {
     console.log(`[${MODULE_NAME}] Message deleted at index: ${messageIndex}`);
-
-    if (settings.enabled === false) {
-        return;
-    }
+    if (settings.enabled === false) return;
 
     const context = getContext();
     const chat = context.chat;
     const chatId = getCurrentChatId();
 
-    // Remove all memos for this message index and higher
+    // Remove memos for deleted index and anything beyond it.
     if (memoCache[chatId]) {
-        const indicesToDelete = Object.keys(memoCache[chatId])
-            .map(Number)
-            .filter(idx => idx >= messageIndex);
-
-        for (const idx of indicesToDelete) {
-            delete memoCache[chatId][idx];
-        }
+        Object.keys(memoCache[chatId]).map(Number)
+            .filter(idx => idx >= messageIndex)
+            .forEach(idx => delete memoCache[chatId][idx]);
 
         settings.memo_cache = memoCache;
         extension_settings[MODULE_NAME] = settings;
         saveSettingsDebounced();
-
         console.log(`[${MODULE_NAME}] Deleted memos for indices >= ${messageIndex}`);
     }
 
-    // Update prompts to use previous message memo
-    const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
-
-    for (const gen of promptGenerations) {
-        // Get memo from the new last message (which is messageIndex - 1 after deletion)
-        const newLastIndex = chat.length - 1;
-
-        if (newLastIndex >= 0) {
-            const lastMessage = chat[newLastIndex];
-            const swipeId = lastMessage.swipe_id || 0;
-            const previousMemo = getMemoFromCache(chatId, newLastIndex, swipeId);
-
-            if (previousMemo) {
-                try {
-                    await updatePromptContent(gen.prompt_name, previousMemo);
-                    console.log(`[${MODULE_NAME}] Restored prompt to previous message memo after deletion`);
-                    updatePromptMonitor();
-                } catch (error) {
-                    console.error(`[${MODULE_NAME}] Failed to restore prompt after deletion:`, error);
-                }
-            } else {
-                // No memo for previous message, set to empty
-                try {
-                    await updatePromptContent(gen.prompt_name, '');
-                    console.log(`[${MODULE_NAME}] Cleared prompt after deletion (no previous memo)`);
-                    updatePromptMonitor();
-                } catch (error) {
-                    console.error(`[${MODULE_NAME}] Failed to clear prompt after deletion:`, error);
-                }
-            }
-        } else {
-            // No messages left, clear prompt
-            try {
-                await updatePromptContent(gen.prompt_name, '');
-                console.log(`[${MODULE_NAME}] Cleared prompt (no messages left)`);
-                updatePromptMonitor();
-            } catch (error) {
-                console.error(`[${MODULE_NAME}] Failed to clear prompt:`, error);
-            }
-        }
-    }
+    // Restore prompts by scanning backwards from the new end of the chat.
+    // restorePromptsForChat handles the empty-chat case too.
+    await restorePromptsForChat(chatId, chat);
 }
 
 async function onGenerationStarted() {
-    console.log(`[${MODULE_NAME}] Generation started - updating prompts proactively`);
-
-    if (settings.enabled === false) {
-        return;
-    }
+    console.log(`[${MODULE_NAME}] Generation started — updating prompts proactively`);
+    if (settings.enabled === false) return;
 
     const context = getContext();
     const chat = context.chat;
     const chatId = getCurrentChatId();
+    const promptGens = getEnabledPromptGenerations();
+    if (promptGens.length === 0) return;
 
     if (!chat || chat.length === 0) {
-        // Empty chat - clear prompts
-        const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
-        for (const gen of promptGenerations) {
-            try {
-                await updatePromptContent(gen.prompt_name, '');
-                console.log(`[${MODULE_NAME}] Cleared prompt "${gen.prompt_name}" (empty chat)`);
-            } catch (error) {
-                console.error(`[${MODULE_NAME}] Failed to clear prompt:`, error);
-            }
-        }
+        await restorePromptsForChat(chatId, chat);
         return;
     }
 
-    const lastMessageIndex = chat.length - 1;
-    const lastMessage = chat[lastMessageIndex];
+    const lastIndex = chat.length - 1;
+    const lastMessage = chat[lastIndex];
+    const regenerationMode = settings.regeneration_mode || 'normal';
 
-    // Check if this is a user message (generation about to happen) or character message (swipe/regen)
-    if (lastMessage.is_user) {
-        // User just sent a message - about to generate character response
-        // Update prompt based on previous character message (if exists)
-        console.log(`[${MODULE_NAME}] User message detected - updating prompt before character generation`);
+    for (const gen of promptGens) {
+        try {
+            let targetMemo;
 
-        const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
-
-        for (const gen of promptGenerations) {
-            try {
-                // Find the last character message
-                let lastCharacterIndex = -1;
-                for (let i = lastMessageIndex - 1; i >= 0; i--) {
-                    if (!chat[i].is_user && !chat[i].is_system) {
-                        lastCharacterIndex = i;
-                        break;
-                    }
+            if (lastMessage.is_user) {
+                // User just submitted — find memo from the last character message
+                // (could be anywhere in the history, not necessarily index - 1).
+                let lastCharIndex = -1;
+                for (let i = lastIndex - 1; i >= 0; i--) {
+                    if (!chat[i].is_user && !chat[i].is_system) { lastCharIndex = i; break; }
                 }
-
-                if (lastCharacterIndex >= 0) {
-                    const lastCharMsg = chat[lastCharacterIndex];
-                    const lastCharSwipeId = lastCharMsg.swipe_id || 0;
-                    const lastCharMemo = getMemoFromCache(chatId, lastCharacterIndex, lastCharSwipeId);
-
-                    if (lastCharMemo) {
-                        await updatePromptContent(gen.prompt_name, lastCharMemo);
-                        console.log(`[${MODULE_NAME}] Updated prompt "${gen.prompt_name}" with last character message memo before generation`);
-                    } else {
-                        console.log(`[${MODULE_NAME}] No cached memo for last character message, prompt unchanged`);
-                    }
-                } else {
-                    // No previous character message - clear or keep empty
-                    await updatePromptContent(gen.prompt_name, '');
-                    console.log(`[${MODULE_NAME}] No previous character message - cleared prompt`);
-                }
-            } catch (error) {
-                console.error(`[${MODULE_NAME}] Failed to update prompt before generation:`, error);
-            }
-        }
-    } else {
-        // Character message at last position - this is a regeneration/swipe about to happen
-        console.log(`[${MODULE_NAME}] Character message detected - updating prompt before regeneration`);
-
-        const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
-        const regenerationMode = settings.regeneration_mode || 'normal';
-
-        for (const gen of promptGenerations) {
-            try {
+                targetMemo = lastCharIndex >= 0
+                    ? findLatestMemo(chatId, lastCharIndex)
+                    : null;
+                console.log(`[${MODULE_NAME}] User message: seeding prompt from char-message memo at index ${lastCharIndex}`);
+            } else {
+                // Regeneration of a character message.
                 if (regenerationMode === 'safe') {
-                    // Safe mode: Use previous message memo
-                    const prevMemo = getPreviousMessageMemo(chatId, lastMessageIndex) || '';
-                    await updatePromptContent(gen.prompt_name, prevMemo);
-                    console.log(`[${MODULE_NAME}] Safe mode: Updated prompt with previous message memo before regeneration`);
+                    targetMemo = findLatestMemoBeforeIndex(chatId, lastIndex);
+                    console.log(`[${MODULE_NAME}] Safe regen: seeding from previous memo`);
                 } else {
-                    // Normal/Aggressive: Check if current swipe has memo
                     const currentSwipeId = lastMessage.swipe_id || 0;
-                    const currentMemo = getMemoFromCache(chatId, lastMessageIndex, currentSwipeId);
-
-                    if (currentMemo) {
-                        // Navigating to existing swipe - use its memo
-                        await updatePromptContent(gen.prompt_name, currentMemo);
-                        console.log(`[${MODULE_NAME}] Normal mode: Updated prompt with current swipe memo`);
+                    const existingMemo = getMemoFromCache(chatId, lastIndex, currentSwipeId);
+                    if (existingMemo) {
+                        // Navigating to an already-generated swipe.
+                        targetMemo = existingMemo;
+                        console.log(`[${MODULE_NAME}] Regen (existing swipe): restoring swipe memo`);
                     } else {
-                        // New regeneration - use previous message memo
-                        const prevMemo = getPreviousMessageMemo(chatId, lastMessageIndex) || '';
-                        await updatePromptContent(gen.prompt_name, prevMemo);
-                        console.log(`[${MODULE_NAME}] Normal mode: New regeneration - updated prompt with previous message memo`);
+                        // Brand-new swipe — seed with whatever came before.
+                        targetMemo = findLatestMemoBeforeIndex(chatId, lastIndex);
+                        console.log(`[${MODULE_NAME}] Regen (new swipe): seeding from previous memo`);
                     }
                 }
-            } catch (error) {
-                console.error(`[${MODULE_NAME}] Failed to update prompt before regeneration:`, error);
             }
+
+            await updatePromptContent(gen.prompt_name, targetMemo ?? '');
+        } catch (error) {
+            console.error(`[${MODULE_NAME}] Failed to update prompt before generation:`, error);
         }
     }
 }
 
 async function onMessageSwiped(messageIndex) {
     console.log(`[${MODULE_NAME}] Message swiped at index: ${messageIndex}`);
-
-    if (settings.enabled === false) {
-        return;
-    }
+    if (settings.enabled === false) return;
 
     const context = getContext();
     const chat = context.chat;
-
     if (!chat || messageIndex >= chat.length) return;
 
     const message = chat[messageIndex];
     const swipeId = message.swipe_id || 0;
     const chatId = getCurrentChatId();
 
-    console.log(`[${MODULE_NAME}] Swipe navigation: index=${messageIndex}, swipeId=${swipeId}`);
-
-    // Check each generation to see if it's in prompt mode
-    const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
-
-    for (const gen of promptGenerations) {
-        // Check if we have a cached memo for this swipe
+    for (const gen of getEnabledPromptGenerations()) {
         const cachedMemo = getMemoFromCache(chatId, messageIndex, swipeId);
-
-        if (cachedMemo) {
-            // Update the prompt with the cached memo
-            try {
-                await updatePromptContent(gen.prompt_name, cachedMemo);
-                console.log(`[${MODULE_NAME}] Restored cached memo for "${gen.prompt_name}" from swipe ${swipeId}`);
-                updatePromptMonitor();
-            } catch (error) {
-                console.error(`[${MODULE_NAME}] Failed to restore cached memo:`, error);
-            }
-        } else {
-            console.log(`[${MODULE_NAME}] No cached memo found for swipe ${swipeId}, will generate on next trigger`);
+        try {
+            await updatePromptContent(gen.prompt_name, cachedMemo ?? '');
+            console.log(`[${MODULE_NAME}] Swipe ${swipeId}: ${cachedMemo ? 'restored' : 'cleared'} memo for "${gen.prompt_name}"`);
+        } catch (error) {
+            console.error(`[${MODULE_NAME}] Failed to update prompt on swipe:`, error);
         }
     }
+
+    updatePromptMonitor();
 }
 
 async function onChatChanged() {
-    console.log(`[${MODULE_NAME}] Chat changed event`);
-
-    if (settings.enabled === false) {
-        return;
-    }
+    console.log(`[${MODULE_NAME}] Chat changed`);
+    if (settings.enabled === false) return;
 
     const context = getContext();
     const chat = context.chat;
@@ -1294,50 +945,16 @@ async function onChatChanged() {
 
     console.log(`[${MODULE_NAME}] Switched to chat: ${chatId}`);
 
-    // Cleanup orphaned memos
     if (chat && chat.length > 0) {
-        const validIndices = chat.map((_, idx) => idx);
-        cleanupMemoCache(chatId, validIndices);
+        cleanupMemoCache(chatId, chat.map((_, idx) => idx));
     }
 
-    // Restore prompts for this chat
-    const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
+    await restorePromptsForChat(chatId, chat);
 
-    for (const gen of promptGenerations) {
-        try {
-            if (!chat || chat.length === 0) {
-                // New/empty chat - clear the prompt
-                await updatePromptContent(gen.prompt_name, '');
-                console.log(`[${MODULE_NAME}] Cleared prompt "${gen.prompt_name}" (empty chat)`);
-            } else {
-                // Restore memo from last message
-                const lastMessageIndex = chat.length - 1;
-                const lastMessage = chat[lastMessageIndex];
-                const lastSwipeId = lastMessage.swipe_id || 0;
-                const lastMemo = getMemoFromCache(chatId, lastMessageIndex, lastSwipeId);
-
-                if (lastMemo) {
-                    await updatePromptContent(gen.prompt_name, lastMemo);
-                    console.log(`[${MODULE_NAME}] Restored prompt "${gen.prompt_name}" from cache`);
-                } else {
-                    // No memo in cache - clear prompt (will be generated on next message)
-                    await updatePromptContent(gen.prompt_name, '');
-                    console.log(`[${MODULE_NAME}] Cleared prompt "${gen.prompt_name}" (no cached memo)`);
-                }
-            }
-
-            updatePromptMonitor();
-        } catch (error) {
-            console.error(`[${MODULE_NAME}] Failed to restore prompt on chat change:`, error);
-        }
-    }
-
-    // Reset tracking
     if (chat && chat.length > 0) {
         const currentIndex = chat.length - 1;
-        const currentMessage = chat[currentIndex];
         lastProcessedMessageIndex = currentIndex;
-        lastProcessedMessage = `${currentIndex}-${currentMessage.mes}`;
+        lastProcessedMessage = `${currentIndex}-${chat[currentIndex].mes}`;
     } else {
         lastProcessedMessageIndex = -1;
         lastProcessedMessage = '';
@@ -1346,221 +963,117 @@ async function onChatChanged() {
 
 async function onCharacterMessage(eventName) {
     console.log(`[${MODULE_NAME}] Event triggered: ${eventName}`);
-
-    // Prevent recursive calls while processing
-    if (isProcessing) {
-        console.log(`[${MODULE_NAME}] Already processing, skipping this event`);
-        return;
-    }
-
-    if (settings.enabled === false) {
-        return;
-    }
+    if (isProcessing) { console.log(`[${MODULE_NAME}] Already processing, skipping`); return; }
+    if (settings.enabled === false) return;
 
     const context = getContext();
     const chat = context.chat;
-
     if (!chat || chat.length === 0) return;
 
     const triggerMode = settings.trigger_mode || 'manual';
+    if (triggerMode === 'manual') return;
 
-    if (triggerMode === 'manual') {
-        return;
-    }
+    const currentIndex = chat.length - 1;
+    const lastMessage = chat[currentIndex];
 
-    const currentMessageIndex = chat.length - 1;
-    const lastMessage = chat[currentMessageIndex];
+    if (lastMessage.is_system) return;
+    if (lastMessage.is_user && !settings.generate_on_user_message) return;
 
-    // Skip system messages always
-    if (lastMessage.is_system) {
-        console.log(`[${MODULE_NAME}] Skipping system message`);
-        return;
-    }
-
-    // Skip user messages unless generate_on_user_message is enabled
-    if (lastMessage.is_user && !settings.generate_on_user_message) {
-        console.log(`[${MODULE_NAME}] Skipping user message (generate_on_user_message is disabled)`);
-        return;
-    }
-
-    // Create a unique identifier for this specific message content
-    const messageId = `${currentMessageIndex}-${lastMessage.mes}`;
-
-    // Check regeneration mode for special handling  
+    const messageId = `${currentIndex}-${lastMessage.mes}`;
     const regenerationMode = settings.regeneration_mode || 'normal';
 
-    // In SAFE mode, skip regenerations entirely - only process genuinely new message indices
-    if (regenerationMode === 'safe' && currentMessageIndex <= lastProcessedMessageIndex) {
-        console.log(`[${MODULE_NAME}] Safe mode: Skipping regeneration at index ${currentMessageIndex} (lastProcessed: ${lastProcessedMessageIndex})`);
+    if (regenerationMode === 'safe' && currentIndex <= lastProcessedMessageIndex) {
+        console.log(`[${MODULE_NAME}] Safe mode: skipping regen at ${currentIndex}`);
         return;
     }
 
-    // Prevent processing the same message twice
     if (lastProcessedMessage === messageId) {
-        console.log(`[${MODULE_NAME}] Skipping already processed message at index ${currentMessageIndex} (messageId: ${messageId.substring(0, 50)}...)`);
+        console.log(`[${MODULE_NAME}] Skipping already processed message at ${currentIndex}`);
         return;
     }
 
-    console.log(`[${MODULE_NAME}] Processing new message at index ${currentMessageIndex}`);
-
-    // IMPORTANT: The prompt has already been updated by onGenerationStarted (fired before this)
-    // So we just need to generate the memo and cache it
+    console.log(`[${MODULE_NAME}] Processing new message at index ${currentIndex}`);
 
     if (triggerMode === 'every_message') {
-        console.log(`[${MODULE_NAME}] Triggering on character message at index ${currentMessageIndex}`);
         lastProcessedMessage = messageId;
-        lastProcessedMessageIndex = currentMessageIndex;
-
-        // Set processing flag
-        isProcessing = true;
-        try {
-            const results = await generateAndUpdatePrompt();
-            const successCount = results.filter(r => r.success).length;
-
-            // In safe mode, NOW update the prompt with the newly generated memo
-            const regenerationMode = settings.regeneration_mode || 'normal';
-            if (regenerationMode === 'safe') {
-                console.log(`[${MODULE_NAME}] Safe mode: Updating prompt AFTER message generation`);
-                // The prompt was already updated in applyGeneration, so we're good
-            }
-
-            toastr.success(`${successCount}/${results.length} generations completed`);
-        } catch (error) {
-            console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
-            toastr.error(`Failed to update: ${error.message}`);
-        } finally {
-            // Clear processing flag after a short delay to allow UI to settle
-            setTimeout(() => {
-                isProcessing = false;
-                console.log(`[${MODULE_NAME}] Processing flag cleared`);
-            }, 500);
-        }
+        lastProcessedMessageIndex = currentIndex;
+        await runGenerations();
     } else if (triggerMode === 'interval') {
-        // Only increment counter if this is a NEW message index (not a swipe/regeneration)
-        if (lastProcessedMessageIndex !== currentMessageIndex) {
-            messageCounter++;
-        }
+        if (lastProcessedMessageIndex !== currentIndex) messageCounter++;
 
         const interval = settings.message_interval || 3;
-        console.log(`[${MODULE_NAME}] Message counter: ${messageCounter}/${interval}`);
+        console.log(`[${MODULE_NAME}] Counter: ${messageCounter}/${interval}`);
 
         if (messageCounter >= interval) {
-            console.log(`[${MODULE_NAME}] Triggering on message interval`);
             messageCounter = 0;
             lastProcessedMessage = messageId;
-            lastProcessedMessageIndex = currentMessageIndex;
-
-            // Set processing flag
-            isProcessing = true;
-            try {
-                const results = await generateAndUpdatePrompt();
-                const successCount = results.filter(r => r.success).length;
-
-                // In safe mode, NOW update the prompt with the newly generated memo
-                const regenerationMode = settings.regeneration_mode || 'normal';
-                if (regenerationMode === 'safe') {
-                    console.log(`[${MODULE_NAME}] Safe mode: Updating prompt AFTER message generation`);
-                    // The prompt was already updated in applyGeneration, so we're good
-                }
-
-                toastr.success(`${successCount}/${results.length} generations completed`);
-            } catch (error) {
-                console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
-                toastr.error(`Failed to update: ${error.message}`);
-            } finally {
-                // Clear processing flag after a short delay to allow UI to settle
-                setTimeout(() => {
-                    isProcessing = false;
-                    console.log(`[${MODULE_NAME}] Processing flag cleared`);
-                }, 500);
-            }
+            lastProcessedMessageIndex = currentIndex;
+            await runGenerations();
         } else {
-            // Update tracking even if not triggering yet
             lastProcessedMessage = messageId;
-            lastProcessedMessageIndex = currentMessageIndex;
+            lastProcessedMessageIndex = currentIndex;
         }
     }
 }
 
-
-
+// ---------------------------------------------------------------------------
+// Bootstrap
+// ---------------------------------------------------------------------------
 
 jQuery(async () => {
     try {
         const settingsHtml = await $.get(`${extensionFolderPath}/settings.html`);
-        $("#extensions_settings").append(settingsHtml);
-        $("#dpm_settings input, #dpm_settings textarea, #dpm_settings select").on("input change", onGlobalInput);
+        $('#extensions_settings').append(settingsHtml);
+        $('#dpm_settings input, #dpm_settings textarea, #dpm_settings select').on('input change', onGlobalInput);
 
-        // Add generation button
         $('#dpm_add_generation').on('click', () => {
-            const newGen = {
+            settings.generations.push({
                 ...DEFAULT_GENERATION,
                 id: Date.now(),
-                name: `Generation ${settings.generations.length + 1}`
-            };
-            settings.generations.push(newGen);
+                name: `Generation ${settings.generations.length + 1}`,
+            });
             saveGenerations();
             renderGenerationsList();
         });
 
-        // Clear cache button
         $('#dpm_clear_cache').on('click', () => {
-            if (confirm('Are you sure you want to clear all cached memos? This cannot be undone.')) {
-                memoCache = {};
-                settings.memo_cache = {};
-                extension_settings[MODULE_NAME] = settings;
-                saveSettingsDebounced();
-                toastr.success('Memo cache cleared successfully');
-                console.log(`[${MODULE_NAME}] Memo cache cleared`);
-            }
+            if (!confirm('Clear all cached memos? This cannot be undone.')) return;
+            memoCache = {};
+            settings.memo_cache = {};
+            extension_settings[MODULE_NAME] = settings;
+            saveSettingsDebounced();
+            toastr.success('Memo cache cleared');
+            console.log(`[${MODULE_NAME}] Memo cache cleared`);
         });
 
         const buttonHtml = await $.get(`${extensionFolderPath}/button.html`);
-        $("#send_but").before(buttonHtml);
+        $('#send_but').before(buttonHtml);
 
-        $("#dpm_generate_button").on("click", async () => {
-            if (settings.enabled === false) {
-                toastr.warning('Extension is disabled. Enable it in settings first.');
-                return;
-            }
+        $('#dpm_generate_button').on('click', async () => {
+            if (settings.enabled === false) { toastr.warning('Extension is disabled. Enable it in settings first.'); return; }
             try {
                 toastr.info('Executing generations...');
                 const results = await generateAndUpdatePrompt();
                 const successCount = results.filter(r => r.success).length;
-                const failCount = results.filter(r => !r.success).length;
-
-                if (failCount > 0) {
-                    toastr.warning(`Completed: ${successCount} successful, ${failCount} failed`);
-                } else {
-                    toastr.success(`All ${successCount} generations completed!`);
-                }
+                const failCount = results.length - successCount;
+                failCount > 0
+                    ? toastr.warning(`Completed: ${successCount} successful, ${failCount} failed`)
+                    : toastr.success(`All ${successCount} generations completed!`);
             } catch (error) {
                 console.error(`[${MODULE_NAME}] Failed to execute generations:`, error);
                 toastr.error(`Failed: ${error.message}`);
             }
         });
 
-        // CRITICAL: Listen to CHAT_GENERATION_STARTED which fires BEFORE the LLM generates
-        // This ensures prompts are updated with correct context before generation
         eventSource.on(event_types.CHAT_GENERATION_STARTED, () => onGenerationStarted());
-
-        // Listen only to CHARACTER_MESSAGE_RENDERED which fires AFTER message is generated
-        // This is when we generate and cache the memo for that message
         eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => onCharacterMessage('CHARACTER_MESSAGE_RENDERED'));
-
-        // Listen to MESSAGE_SWIPED to update prompts when navigating between swipes
         eventSource.on(event_types.MESSAGE_SWIPED, (messageIndex) => onMessageSwiped(messageIndex));
-
-        // Listen to MESSAGE_DELETED to cleanup cache and update prompts
         eventSource.on(event_types.MESSAGE_DELETED, (messageIndex) => onMessageDeleted(messageIndex));
-
-        // Listen to CHAT_CHANGED to restore prompts when switching chats
         eventSource.on(event_types.CHAT_CHANGED, () => onChatChanged());
 
         await loadSettings();
-
-        console.log(`[${MODULE_NAME}] Extension initialized successfully`);
+        console.log(`[${MODULE_NAME}] Extension initialized`);
     } catch (error) {
-        console.error(`[${MODULE_NAME}] Failed to initialize extension:`, error);
+        console.error(`[${MODULE_NAME}] Failed to initialize:`, error);
     }
 });
