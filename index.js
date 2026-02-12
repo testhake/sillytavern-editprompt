@@ -29,6 +29,84 @@ let messageCounter = 0;
 let lastProcessedMessageIndex = -1;
 let lastProcessedMessage = '';
 let isProcessing = false; // Flag to prevent recursive triggers
+let memoCache = {}; // In-memory cache, synced with settings
+
+// Memo cache helper functions
+function getCurrentChatId() {
+    const context = getContext();
+    return context.chatId || context.characterId || 'default';
+}
+
+function initializeMemoCache() {
+    if (!settings.memo_cache) {
+        settings.memo_cache = {};
+    }
+    memoCache = settings.memo_cache;
+}
+
+function getMemoFromCache(chatId, messageIndex, swipeId) {
+    if (!memoCache[chatId]) return null;
+    if (!memoCache[chatId][messageIndex]) return null;
+    if (!memoCache[chatId][messageIndex].swipes) return null;
+    return memoCache[chatId][messageIndex].swipes[swipeId] || null;
+}
+
+function setMemoInCache(chatId, messageIndex, swipeId, memoContent) {
+    if (!memoCache[chatId]) {
+        memoCache[chatId] = {};
+    }
+    if (!memoCache[chatId][messageIndex]) {
+        memoCache[chatId][messageIndex] = {
+            swipes: {},
+            activeSwipe: swipeId
+        };
+    }
+    
+    memoCache[chatId][messageIndex].swipes[swipeId] = memoContent;
+    memoCache[chatId][messageIndex].activeSwipe = swipeId;
+    
+    // Persist to settings
+    settings.memo_cache = memoCache;
+    extension_settings[MODULE_NAME] = settings;
+    saveSettingsDebounced();
+    
+    console.log(`[${MODULE_NAME}] Cached memo for chat:${chatId} msg:${messageIndex} swipe:${swipeId}`);
+}
+
+function getPreviousMessageMemo(chatId, messageIndex) {
+    // Get memo from previous message (using its active swipe)
+    if (messageIndex <= 0) return null;
+    
+    const prevIndex = messageIndex - 1;
+    if (!memoCache[chatId] || !memoCache[chatId][prevIndex]) return null;
+    
+    const prevMessage = memoCache[chatId][prevIndex];
+    const activeSwipeId = prevMessage.activeSwipe || 0;
+    
+    return prevMessage.swipes[activeSwipeId] || null;
+}
+
+function cleanupMemoCache(chatId, validMessageIndices) {
+    // Remove memos for messages that no longer exist
+    if (!memoCache[chatId]) return;
+    
+    const cachedIndices = Object.keys(memoCache[chatId]).map(Number);
+    let cleaned = 0;
+    
+    for (const index of cachedIndices) {
+        if (!validMessageIndices.includes(index)) {
+            delete memoCache[chatId][index];
+            cleaned++;
+        }
+    }
+    
+    if (cleaned > 0) {
+        settings.memo_cache = memoCache;
+        extension_settings[MODULE_NAME] = settings;
+        saveSettingsDebounced();
+        console.log(`[${MODULE_NAME}] Cleaned ${cleaned} orphaned memos from cache`);
+    }
+}
 
 // Default generation config
 const DEFAULT_GENERATION = {
@@ -51,6 +129,9 @@ async function loadSettings() {
     }
     settings = extension_settings[MODULE_NAME];
 
+    // Initialize memo cache
+    initializeMemoCache();
+
     // Initialize generations array if it doesn't exist
     if (!settings.generations || !Array.isArray(settings.generations)) {
         settings.generations = [{ ...DEFAULT_GENERATION }];
@@ -62,6 +143,7 @@ async function loadSettings() {
     $('#dpm_generate_on_user_message').prop('checked', settings.generate_on_user_message !== false).trigger('input');
     $('#dpm_show_monitor').prop('checked', settings.show_monitor !== false).trigger('input');
     $('#dpm_enabled').prop('checked', settings.enabled !== false).trigger('input');
+    $('#dpm_regeneration_mode').val(settings.regeneration_mode || 'normal').trigger('input');
 
     // Initialize tracking to current state to prevent processing existing messages on load
     const context = getContext();
@@ -72,6 +154,11 @@ async function loadSettings() {
         lastProcessedMessageIndex = currentIndex;
         lastProcessedMessage = `${currentIndex}-${currentMessage.mes}`;
         console.log(`[${MODULE_NAME}] Initialized tracking at message index ${currentIndex}`);
+        
+        // Cleanup orphaned memos
+        const chatId = getCurrentChatId();
+        const validIndices = chat.map((_, idx) => idx);
+        cleanupMemoCache(chatId, validIndices);
     }
 
     // Render generations list
@@ -140,7 +227,7 @@ function renderGenerationsList() {
 function createGenerationItem(gen, index) {
     const modeLabel = gen.mode === 'prompt' ? 'Edit Prompt' : 'Edit Message';
     const modeIcon = gen.mode === 'prompt' ? 'fa-file-text' : 'fa-comment';
-
+    
     const $item = $(`
         <div class="dpm-generation-item" data-index="${index}">
             <div class="dpm-gen-header">
@@ -225,77 +312,77 @@ function createGenerationItem(gen, index) {
     `);
 
     // Bind events
-    $item.find('.dpm-gen-enabled').on('change', function () {
+    $item.find('.dpm-gen-enabled').on('change', function() {
         gen.enabled = $(this).prop('checked');
         saveGenerations();
     });
 
-    $item.find('.dpm-gen-name').on('input', function () {
+    $item.find('.dpm-gen-name').on('input', function() {
         gen.name = $(this).val();
         saveGenerations();
     });
 
-    $item.find('.dpm-gen-mode').on('change', function () {
+    $item.find('.dpm-gen-mode').on('change', function() {
         gen.mode = $(this).val();
         const $promptField = $item.find('.dpm-gen-prompt-field');
         const modeLabel = gen.mode === 'prompt' ? 'Edit Prompt' : 'Edit Message';
         const modeIcon = gen.mode === 'prompt' ? 'fa-file-text' : 'fa-comment';
-
+        
         if (gen.mode === 'message') {
             $promptField.hide();
         } else {
             $promptField.show();
         }
-
+        
         $item.find('.dpm-gen-mode-label').text(modeLabel);
         $item.find('.dpm-gen-title i').attr('class', `fa-solid ${modeIcon}`);
         saveGenerations();
     });
 
-    $item.find('.dpm-gen-prompt-name').on('input', function () {
+    $item.find('.dpm-gen-prompt-name').on('input', function() {
         gen.prompt_name = $(this).val();
         saveGenerations();
     });
 
-    $item.find('.dpm-gen-llm-prompt').on('input', function () {
+    $item.find('.dpm-gen-llm-prompt').on('input', function() {
         gen.llm_prompt = $(this).val();
         saveGenerations();
     });
 
-    $item.find('.dpm-gen-use-raw').on('change', function () {
+    $item.find('.dpm-gen-use-raw').on('change', function() {
         gen.use_raw = $(this).prop('checked');
         saveGenerations();
     });
 
-    $item.find('.dpm-gen-use-custom').on('change', function () {
+    $item.find('.dpm-gen-use-custom').on('change', function() {
         gen.use_custom_generate_raw = $(this).prop('checked');
         saveGenerations();
     });
 
-    $item.find('.dpm-gen-custom-model').on('input', function () {
+    $item.find('.dpm-gen-custom-model').on('input', function() {
         gen.custom_model = $(this).val();
         saveGenerations();
     });
 
-    $item.find('.dpm-gen-custom-params').on('input', function () {
+    $item.find('.dpm-gen-custom-params').on('input', function() {
         gen.custom_parameters = $(this).val();
         saveGenerations();
     });
 
-    $item.find('.dpm-gen-message-count').on('input', function () {
+    $item.find('.dpm-gen-message-count').on('input', function() {
         const value = parseInt($(this).val());
         gen.message_count = (!isNaN(value) && value >= 0) ? value : 5;
         saveGenerations();
     });
 
-    $item.find('.dpm-gen-toggle').on('click', function () {
+    $item.find('.dpm-gen-toggle').on('click', function() {
         const $body = $item.find('.dpm-gen-body');
         const $icon = $(this).find('i');
         $body.slideToggle(200);
         $icon.toggleClass('fa-chevron-down fa-chevron-up');
     });
 
-    $item.find('.dpm-gen-delete').on('click', function () {
+    $item.find('.dpm-gen-delete').on('click', function() {
         if (settings.generations.length <= 1) {
             toastr.warning('Cannot delete the last generation');
             return;
@@ -307,7 +394,7 @@ function createGenerationItem(gen, index) {
         }
     });
 
-    $item.find('.dpm-gen-move').on('click', function () {
+    $item.find('.dpm-gen-move').on('click', function() {
         const direction = $(this).data('direction');
         moveGeneration(index, direction);
     });
@@ -317,7 +404,7 @@ function createGenerationItem(gen, index) {
 
 function moveGeneration(index, direction) {
     const newIndex = direction === 'up' ? index - 1 : index + 1;
-
+    
     if (newIndex < 0 || newIndex >= settings.generations.length) {
         return;
     }
@@ -552,7 +639,7 @@ function updatePromptMonitor() {
         if (gen.mode === 'prompt') {
             const promptInfo = getPromptByName(gen.prompt_name);
             const $content = $genDisplay.find(`#dpm_monitor_gen_${index}`);
-
+            
             if (promptInfo) {
                 const content = promptInfo.content || '(empty)';
                 $content.html(`
@@ -732,13 +819,49 @@ async function executeGeneration(gen) {
         throw new Error(`No visible messages found.`);
     }
 
+    // For prompt mode, get the appropriate memo from cache
     let promptContent = '';
     if (gen.mode === 'prompt') {
         const promptInfo = getPromptByName(gen.prompt_name);
         if (!promptInfo) {
             throw new Error(`Prompt "${gen.prompt_name}" not found.`);
         }
-        promptContent = promptInfo.content;
+        
+        // Get the current memo based on regeneration mode
+        const chatId = getCurrentChatId();
+        const currentMessageIndex = chat.length - 1;
+        const currentMessage = chat[currentMessageIndex];
+        const currentSwipeId = currentMessage.swipe_id || 0;
+        const regenerationMode = settings.regeneration_mode || 'normal';
+        
+        if (regenerationMode === 'safe') {
+            // Safe mode: Use memo from previous message
+            promptContent = getPreviousMessageMemo(chatId, currentMessageIndex) || promptInfo.content;
+            console.log(`[${MODULE_NAME}] Safe mode: Using previous message memo`);
+        } else {
+            // Normal/Aggressive mode: Check if this is a regeneration
+            const existingMemo = getMemoFromCache(chatId, currentMessageIndex, currentSwipeId);
+            
+            if (existingMemo) {
+                // This swipe already has a memo (we're navigating back to it)
+                promptContent = existingMemo;
+                console.log(`[${MODULE_NAME}] Using cached memo for swipe ${currentSwipeId}`);
+            } else {
+                // New swipe - check if there are other swipes at this index
+                const hasOtherSwipes = memoCache[chatId]?.[currentMessageIndex]?.swipes && 
+                                      Object.keys(memoCache[chatId][currentMessageIndex].swipes).length > 0;
+                
+                if (hasOtherSwipes) {
+                    // This is a new regeneration - use previous message's memo
+                    promptContent = getPreviousMessageMemo(chatId, currentMessageIndex) || promptInfo.content;
+                    console.log(`[${MODULE_NAME}] New regeneration detected: Using previous message memo`);
+                } else {
+                    // First time processing this message index - use current prompt
+                    promptContent = promptInfo.content;
+                    console.log(`[${MODULE_NAME}] First time at this index: Using current prompt`);
+                }
+            }
+        }
     }
 
     let newContent;
@@ -842,12 +965,23 @@ async function applyGeneration(gen, content) {
     if (gen.mode === 'prompt') {
         // Update prompt
         await updatePromptContent(gen.prompt_name, content);
-        console.log(`[${MODULE_NAME}] Updated prompt "${gen.prompt_name}"`);
+        
+        // Store memo in cache
+        const context = getContext();
+        const chat = context.chat;
+        const chatId = getCurrentChatId();
+        const messageIndex = chat.length - 1;
+        const currentMessage = chat[messageIndex];
+        const swipeId = currentMessage.swipe_id || 0;
+        
+        setMemoInCache(chatId, messageIndex, swipeId, content);
+        
+        console.log(`[${MODULE_NAME}] Updated prompt "${gen.prompt_name}" and cached memo`);
     } else {
         // Append to last message
         const context = getContext();
         const chat = context.chat;
-
+        
         if (!chat || chat.length === 0) {
             throw new Error('No messages to append to');
         }
@@ -855,11 +989,11 @@ async function applyGeneration(gen, content) {
         const lastMessageIndex = chat.length - 1;
         const lastMessage = chat[lastMessageIndex];
         lastMessage.mes += '\n\n' + content;
-
+        
         // Update the lastProcessedMessage to include the new content
         // This prevents the modified message from being processed again
         lastProcessedMessage = `${lastMessageIndex}-${lastMessage.mes}`;
-
+        
         // Directly update the DOM without triggering events
         const $messageElement = $(`#chat .mes[mesid="${lastMessageIndex}"]`);
         if ($messageElement.length > 0) {
@@ -872,11 +1006,11 @@ async function applyGeneration(gen, content) {
                 $mesText.html(formattedContent);
             }
         }
-
+        
         // Save chat without triggering events
         const { saveChatConditional } = await import('../../../../script.js');
         await saveChatConditional();
-
+        
         console.log(`[${MODULE_NAME}] Appended content to last message and refreshed UI`);
     }
 }
@@ -911,19 +1045,60 @@ async function generateAndUpdatePrompt() {
     return results;
 }
 
+async function onMessageSwiped(messageIndex) {
+    console.log(`[${MODULE_NAME}] Message swiped at index: ${messageIndex}`);
+    
+    if (settings.enabled === false) {
+        return;
+    }
+    
+    const context = getContext();
+    const chat = context.chat;
+    
+    if (!chat || messageIndex >= chat.length) return;
+    
+    const message = chat[messageIndex];
+    const swipeId = message.swipe_id || 0;
+    const chatId = getCurrentChatId();
+    
+    console.log(`[${MODULE_NAME}] Swipe navigation: index=${messageIndex}, swipeId=${swipeId}`);
+    
+    // Check each generation to see if it's in prompt mode
+    const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
+    
+    for (const gen of promptGenerations) {
+        // Check if we have a cached memo for this swipe
+        const cachedMemo = getMemoFromCache(chatId, messageIndex, swipeId);
+        
+        if (cachedMemo) {
+            // Update the prompt with the cached memo
+            try {
+                await updatePromptContent(gen.prompt_name, cachedMemo);
+                console.log(`[${MODULE_NAME}] Restored cached memo for "${gen.prompt_name}" from swipe ${swipeId}`);
+                updatePromptMonitor();
+            } catch (error) {
+                console.error(`[${MODULE_NAME}] Failed to restore cached memo:`, error);
+            }
+        } else {
+            console.log(`[${MODULE_NAME}] No cached memo found for swipe ${swipeId}, will generate on next trigger`);
+            // The memo will be generated when the next message arrives or user triggers manually
+        }
+    }
+}
+
 async function onCharacterMessage(eventName) {
     console.log(`[${MODULE_NAME}] Event triggered: ${eventName}`);
-
+    
     // Prevent recursive calls while processing
     if (isProcessing) {
         console.log(`[${MODULE_NAME}] Already processing, skipping this event`);
         return;
     }
-
+    
     if (settings.enabled === false) {
         return;
     }
-
+    
     const context = getContext();
     const chat = context.chat;
 
@@ -943,16 +1118,16 @@ async function onCharacterMessage(eventName) {
         console.log(`[${MODULE_NAME}] Skipping system message`);
         return;
     }
-
+    
     // Skip user messages unless generate_on_user_message is enabled
     if (lastMessage.is_user && !settings.generate_on_user_message) {
         console.log(`[${MODULE_NAME}] Skipping user message (generate_on_user_message is disabled)`);
         return;
     }
-
+    
     // Create a unique identifier for this specific message content
     const messageId = `${currentMessageIndex}-${lastMessage.mes}`;
-
+    
     // Prevent processing the same message twice
     if (lastProcessedMessage === messageId) {
         console.log(`[${MODULE_NAME}] Skipping already processed message at index ${currentMessageIndex} (messageId: ${messageId.substring(0, 50)}...)`);
@@ -987,7 +1162,7 @@ async function onCharacterMessage(eventName) {
         if (lastProcessedMessageIndex !== currentMessageIndex) {
             messageCounter++;
         }
-
+        
         const interval = settings.message_interval || 3;
         console.log(`[${MODULE_NAME}] Message counter: ${messageCounter}/${interval}`);
 
@@ -1040,6 +1215,18 @@ jQuery(async () => {
             renderGenerationsList();
         });
 
+        // Clear cache button
+        $('#dpm_clear_cache').on('click', () => {
+            if (confirm('Are you sure you want to clear all cached memos? This cannot be undone.')) {
+                memoCache = {};
+                settings.memo_cache = {};
+                extension_settings[MODULE_NAME] = settings;
+                saveSettingsDebounced();
+                toastr.success('Memo cache cleared successfully');
+                console.log(`[${MODULE_NAME}] Memo cache cleared`);
+            }
+        });
+
         const buttonHtml = await $.get(`${extensionFolderPath}/button.html`);
         $("#send_but").before(buttonHtml);
 
@@ -1053,7 +1240,7 @@ jQuery(async () => {
                 const results = await generateAndUpdatePrompt();
                 const successCount = results.filter(r => r.success).length;
                 const failCount = results.filter(r => !r.success).length;
-
+                
                 if (failCount > 0) {
                     toastr.warning(`Completed: ${successCount} successful, ${failCount} failed`);
                 } else {
@@ -1068,6 +1255,21 @@ jQuery(async () => {
         // Listen only to CHARACTER_MESSAGE_RENDERED which fires once per character message
         // This includes both new messages and swipes/regenerations
         eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => onCharacterMessage('CHARACTER_MESSAGE_RENDERED'));
+        
+        // Listen to MESSAGE_SWIPED to update prompts when navigating between swipes
+        eventSource.on(event_types.MESSAGE_SWIPED, (messageIndex) => onMessageSwiped(messageIndex));
+        
+        // Listen to CHAT_CHANGED to cleanup memo cache when switching chats
+        eventSource.on(event_types.CHAT_CHANGED, () => {
+            const context = getContext();
+            const chat = context.chat;
+            if (chat && chat.length > 0) {
+                const chatId = getCurrentChatId();
+                const validIndices = chat.map((_, idx) => idx);
+                cleanupMemoCache(chatId, validIndices);
+                console.log(`[${MODULE_NAME}] Chat changed, cleaned up memo cache`);
+            }
+        });
 
         await loadSettings();
 

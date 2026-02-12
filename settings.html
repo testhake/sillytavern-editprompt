@@ -47,6 +47,34 @@
                 <small class="notes">Also generate on user message</small>
             </div>
 
+            <!-- Regeneration Mode -->
+            <div class="title_restorable">
+                <h4>Prompt Mode Options</h4>
+            </div>
+
+            <div class="marginBot10">
+                <label for="dpm_regeneration_mode" class="checkbox_label">
+                    <span>Regeneration Detection Mode</span>
+                </label>
+                <select id="dpm_regeneration_mode" class="text_pole">
+                    <option value="safe">Safe - Use previous message memo during regenerations</option>
+                    <option value="normal" selected>Normal - Smart detection with full history tracking</option>
+                    <option value="aggressive">Aggressive - Always update immediately</option>
+                </select>
+                <small class="notes">
+                    <strong>Safe:</strong> Waits for next message before updating prompt (prevents wrong context during regenerations)<br>
+                    <strong>Normal:</strong> Tracks all swipes, restores correct memo when navigating between them (recommended)<br>
+                    <strong>Aggressive:</strong> Updates immediately, only stores current swipe
+                </small>
+            </div>
+
+            <div class="marginBot10">
+                <button id="dpm_clear_cache" class="menu_button">
+                    <i class="fa-solid fa-trash"></i> Clear Memo Cache
+                </button>
+                <small class="notes">Remove all cached memos from all chats. Use if cache becomes corrupted.</small>
+            </div>
+
             <!-- Monitor Options -->
             <div class="title_restorable">
                 <h4>Monitor Options</h4>
