@@ -1066,6 +1066,232 @@ async function generateAndUpdatePrompt() {
     return results;
 }
 
+async function onMessageDeleted(messageIndex) {
+    console.log(`[${MODULE_NAME}] Message deleted at index: ${messageIndex}`);
+
+    if (settings.enabled === false) {
+        return;
+    }
+
+    const context = getContext();
+    const chat = context.chat;
+    const chatId = getCurrentChatId();
+
+    // Remove all memos for this message index and higher
+    if (memoCache[chatId]) {
+        const indicesToDelete = Object.keys(memoCache[chatId])
+            .map(Number)
+            .filter(idx => idx >= messageIndex);
+
+        for (const idx of indicesToDelete) {
+            delete memoCache[chatId][idx];
+        }
+
+        settings.memo_cache = memoCache;
+        extension_settings[MODULE_NAME] = settings;
+        saveSettingsDebounced();
+
+        console.log(`[${MODULE_NAME}] Deleted memos for indices >= ${messageIndex}`);
+    }
+
+    // Update prompts to use previous message memo
+    const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
+
+    for (const gen of promptGenerations) {
+        // Get memo from the new last message (which is messageIndex - 1 after deletion)
+        const newLastIndex = chat.length - 1;
+
+        if (newLastIndex >= 0) {
+            const lastMessage = chat[newLastIndex];
+            const swipeId = lastMessage.swipe_id || 0;
+            const previousMemo = getMemoFromCache(chatId, newLastIndex, swipeId);
+
+            if (previousMemo) {
+                try {
+                    await updatePromptContent(gen.prompt_name, previousMemo);
+                    console.log(`[${MODULE_NAME}] Restored prompt to previous message memo after deletion`);
+                    updatePromptMonitor();
+                } catch (error) {
+                    console.error(`[${MODULE_NAME}] Failed to restore prompt after deletion:`, error);
+                }
+            } else {
+                // No memo for previous message, set to empty
+                try {
+                    await updatePromptContent(gen.prompt_name, '');
+                    console.log(`[${MODULE_NAME}] Cleared prompt after deletion (no previous memo)`);
+                    updatePromptMonitor();
+                } catch (error) {
+                    console.error(`[${MODULE_NAME}] Failed to clear prompt after deletion:`, error);
+                }
+            }
+        } else {
+            // No messages left, clear prompt
+            try {
+                await updatePromptContent(gen.prompt_name, '');
+                console.log(`[${MODULE_NAME}] Cleared prompt (no messages left)`);
+                updatePromptMonitor();
+            } catch (error) {
+                console.error(`[${MODULE_NAME}] Failed to clear prompt:`, error);
+            }
+        }
+    }
+}
+
+async function onGenerationStarted() {
+    console.log(`[${MODULE_NAME}] Generation started - updating prompts proactively`);
+
+    if (settings.enabled === false) {
+        return;
+    }
+
+    const context = getContext();
+    const chat = context.chat;
+    const chatId = getCurrentChatId();
+
+    if (!chat || chat.length === 0) {
+        // Empty chat - clear prompts
+        const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
+        for (const gen of promptGenerations) {
+            try {
+                await updatePromptContent(gen.prompt_name, '');
+                console.log(`[${MODULE_NAME}] Cleared prompt "${gen.prompt_name}" (empty chat)`);
+            } catch (error) {
+                console.error(`[${MODULE_NAME}] Failed to clear prompt:`, error);
+            }
+        }
+        return;
+    }
+
+    const lastMessageIndex = chat.length - 1;
+    const lastMessage = chat[lastMessageIndex];
+
+    // Check if this is a user message (generation about to happen) or character message (swipe/regen)
+    if (lastMessage.is_user) {
+        // User just sent a message - about to generate character response
+        // Update prompt based on previous character message (if exists)
+        console.log(`[${MODULE_NAME}] User message detected - updating prompt before character generation`);
+
+        const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
+
+        for (const gen of promptGenerations) {
+            try {
+                // Find the last character message
+                let lastCharacterIndex = -1;
+                for (let i = lastMessageIndex - 1; i >= 0; i--) {
+                    if (!chat[i].is_user && !chat[i].is_system) {
+                        lastCharacterIndex = i;
+                        break;
+                    }
+                }
+
+                if (lastCharacterIndex >= 0) {
+                    const lastCharMsg = chat[lastCharacterIndex];
+                    const lastCharSwipeId = lastCharMsg.swipe_id || 0;
+                    const lastCharMemo = getMemoFromCache(chatId, lastCharacterIndex, lastCharSwipeId);
+
+                    if (lastCharMemo) {
+                        await updatePromptContent(gen.prompt_name, lastCharMemo);
+                        console.log(`[${MODULE_NAME}] Updated prompt "${gen.prompt_name}" with last character message memo before generation`);
+                    } else {
+                        console.log(`[${MODULE_NAME}] No cached memo for last character message, prompt unchanged`);
+                    }
+                } else {
+                    // No previous character message - clear or keep empty
+                    await updatePromptContent(gen.prompt_name, '');
+                    console.log(`[${MODULE_NAME}] No previous character message - cleared prompt`);
+                }
+            } catch (error) {
+                console.error(`[${MODULE_NAME}] Failed to update prompt before generation:`, error);
+            }
+        }
+    } else {
+        // Character message at last position - this is a regeneration/swipe about to happen
+        console.log(`[${MODULE_NAME}] Character message detected - updating prompt before regeneration`);
+
+        const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
+        const regenerationMode = settings.regeneration_mode || 'normal';
+
+        for (const gen of promptGenerations) {
+            try {
+                if (regenerationMode === 'safe') {
+                    // Safe mode: Use previous message memo
+                    const prevMemo = getPreviousMessageMemo(chatId, lastMessageIndex) || '';
+                    await updatePromptContent(gen.prompt_name, prevMemo);
+                    console.log(`[${MODULE_NAME}] Safe mode: Updated prompt with previous message memo before regeneration`);
+                } else {
+                    // Normal/Aggressive: Check if current swipe has memo
+                    const currentSwipeId = lastMessage.swipe_id || 0;
+                    const currentMemo = getMemoFromCache(chatId, lastMessageIndex, currentSwipeId);
+
+                    if (currentMemo) {
+                        // Navigating to existing swipe - use its memo
+                        await updatePromptContent(gen.prompt_name, currentMemo);
+                        console.log(`[${MODULE_NAME}] Normal mode: Updated prompt with current swipe memo`);
+                    } else {
+                        // New regeneration - use previous message memo
+                        const prevMemo = getPreviousMessageMemo(chatId, lastMessageIndex) || '';
+                        await updatePromptContent(gen.prompt_name, prevMemo);
+                        console.log(`[${MODULE_NAME}] Normal mode: New regeneration - updated prompt with previous message memo`);
+                    }
+                }
+            } catch (error) {
+                console.error(`[${MODULE_NAME}] Failed to update prompt before regeneration:`, error);
+            }
+        }
+    }
+}
+
+async function onMessageDeleted(messageIndex) {
+    console.log(`[${MODULE_NAME}] Message deleted at index: ${messageIndex}`);
+
+    if (settings.enabled === false) {
+        return;
+    }
+
+    const context = getContext();
+    const chat = context.chat;
+    const chatId = getCurrentChatId();
+
+    // Remove the memo for this message from cache
+    if (memoCache[chatId] && memoCache[chatId][messageIndex]) {
+        delete memoCache[chatId][messageIndex];
+        settings.memo_cache = memoCache;
+        extension_settings[MODULE_NAME] = settings;
+        saveSettingsDebounced();
+        console.log(`[${MODULE_NAME}] Removed memo for deleted message at index ${messageIndex}`);
+    }
+
+    // If we deleted the last message or chat is now empty, update prompts appropriately
+    const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
+
+    for (const gen of promptGenerations) {
+        let newPromptContent = '';
+
+        if (chat.length === 0) {
+            // Chat is now empty - clear the prompt
+            newPromptContent = '';
+            console.log(`[${MODULE_NAME}] Chat is empty, clearing prompt "${gen.prompt_name}"`);
+        } else if (messageIndex === 0 && chat.length > 0) {
+            // Deleted first message, but chat still has messages
+            // The new first message should start with empty prompt
+            newPromptContent = '';
+            console.log(`[${MODULE_NAME}] Deleted first message, clearing prompt "${gen.prompt_name}"`);
+        } else {
+            // Deleted a message in the middle or at end - use previous message's memo
+            const newLastIndex = chat.length - 1;
+            newPromptContent = getPreviousMessageMemo(chatId, newLastIndex + 1) || '';
+            console.log(`[${MODULE_NAME}] Restored prompt from previous message after deletion`);
+        }
+
+        try {
+            await updatePromptContent(gen.prompt_name, newPromptContent);
+            updatePromptMonitor();
+        } catch (error) {
+            console.error(`[${MODULE_NAME}] Failed to update prompt after deletion:`, error);
+        }
+    }
+}
+
 async function onMessageSwiped(messageIndex) {
     console.log(`[${MODULE_NAME}] Message swiped at index: ${messageIndex}`);
 
@@ -1273,6 +1499,15 @@ async function onCharacterMessage(eventName) {
     // Create a unique identifier for this specific message content
     const messageId = `${currentMessageIndex}-${lastMessage.mes}`;
 
+    // Check regeneration mode for special handling  
+    const regenerationMode = settings.regeneration_mode || 'normal';
+
+    // In SAFE mode, skip regenerations entirely - only process genuinely new message indices
+    if (regenerationMode === 'safe' && currentMessageIndex <= lastProcessedMessageIndex) {
+        console.log(`[${MODULE_NAME}] Safe mode: Skipping regeneration at index ${currentMessageIndex} (lastProcessed: ${lastProcessedMessageIndex})`);
+        return;
+    }
+
     // Prevent processing the same message twice
     if (lastProcessedMessage === messageId) {
         console.log(`[${MODULE_NAME}] Skipping already processed message at index ${currentMessageIndex} (messageId: ${messageId.substring(0, 50)}...)`);
@@ -1280,6 +1515,9 @@ async function onCharacterMessage(eventName) {
     }
 
     console.log(`[${MODULE_NAME}] Processing new message at index ${currentMessageIndex}`);
+
+    // IMPORTANT: The prompt has already been updated by onGenerationStarted (fired before this)
+    // So we just need to generate the memo and cache it
 
     if (triggerMode === 'every_message') {
         console.log(`[${MODULE_NAME}] Triggering on character message at index ${currentMessageIndex}`);
@@ -1291,6 +1529,14 @@ async function onCharacterMessage(eventName) {
         try {
             const results = await generateAndUpdatePrompt();
             const successCount = results.filter(r => r.success).length;
+
+            // In safe mode, NOW update the prompt with the newly generated memo
+            const regenerationMode = settings.regeneration_mode || 'normal';
+            if (regenerationMode === 'safe') {
+                console.log(`[${MODULE_NAME}] Safe mode: Updating prompt AFTER message generation`);
+                // The prompt was already updated in applyGeneration, so we're good
+            }
+
             toastr.success(`${successCount}/${results.length} generations completed`);
         } catch (error) {
             console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
@@ -1322,6 +1568,14 @@ async function onCharacterMessage(eventName) {
             try {
                 const results = await generateAndUpdatePrompt();
                 const successCount = results.filter(r => r.success).length;
+
+                // In safe mode, NOW update the prompt with the newly generated memo
+                const regenerationMode = settings.regeneration_mode || 'normal';
+                if (regenerationMode === 'safe') {
+                    console.log(`[${MODULE_NAME}] Safe mode: Updating prompt AFTER message generation`);
+                    // The prompt was already updated in applyGeneration, so we're good
+                }
+
                 toastr.success(`${successCount}/${results.length} generations completed`);
             } catch (error) {
                 console.error(`[${MODULE_NAME}] Auto-update failed:`, error);
@@ -1338,6 +1592,70 @@ async function onCharacterMessage(eventName) {
             lastProcessedMessage = messageId;
             lastProcessedMessageIndex = currentMessageIndex;
         }
+    }
+}
+
+
+async function onChatChanged() {
+    console.log(`[${MODULE_NAME}] Chat changed`);
+
+    if (settings.enabled === false) {
+        return;
+    }
+
+    const context = getContext();
+    const chat = context.chat;
+    const chatId = getCurrentChatId();
+
+    // Cleanup orphaned memos for this chat
+    if (chat && chat.length > 0) {
+        const validIndices = chat.map((_, idx) => idx);
+        cleanupMemoCache(chatId, validIndices);
+    }
+
+    // Update prompts based on current chat state
+    const promptGenerations = settings.generations.filter(gen => gen.enabled && gen.mode === 'prompt');
+
+    for (const gen of promptGenerations) {
+        try {
+            if (!chat || chat.length === 0) {
+                // Empty chat - clear the prompt
+                await updatePromptContent(gen.prompt_name, '');
+                console.log(`[${MODULE_NAME}] Cleared prompt "${gen.prompt_name}" (empty chat)`);
+            } else {
+                // Restore prompt from last message's memo
+                const lastIndex = chat.length - 1;
+                const lastMessage = chat[lastIndex];
+                const swipeId = lastMessage.swipe_id || 0;
+
+                const cachedMemo = getMemoFromCache(chatId, lastIndex, swipeId);
+
+                if (cachedMemo) {
+                    await updatePromptContent(gen.prompt_name, cachedMemo);
+                    console.log(`[${MODULE_NAME}] Restored prompt "${gen.prompt_name}" from cached memo`);
+                } else {
+                    // No memo for current message - use previous message's memo if available
+                    const prevMemo = getPreviousMessageMemo(chatId, lastIndex) || '';
+                    await updatePromptContent(gen.prompt_name, prevMemo);
+                    console.log(`[${MODULE_NAME}] Restored prompt "${gen.prompt_name}" from previous message`);
+                }
+            }
+
+            updatePromptMonitor();
+        } catch (error) {
+            console.error(`[${MODULE_NAME}] Failed to restore prompt after chat change:`, error);
+        }
+    }
+
+    // Reset tracking
+    if (chat && chat.length > 0) {
+        const lastIndex = chat.length - 1;
+        const lastMessage = chat[lastIndex];
+        lastProcessedMessageIndex = lastIndex;
+        lastProcessedMessage = `${lastIndex}-${lastMessage.mes}`;
+    } else {
+        lastProcessedMessageIndex = -1;
+        lastProcessedMessage = '';
     }
 }
 
@@ -1397,8 +1715,12 @@ jQuery(async () => {
             }
         });
 
-        // Listen only to CHARACTER_MESSAGE_RENDERED which fires once per character message
-        // This includes both new messages and swipes/regenerations
+        // CRITICAL: Listen to CHAT_GENERATION_STARTED which fires BEFORE the LLM generates
+        // This ensures prompts are updated with correct context before generation
+        eventSource.on(event_types.CHAT_GENERATION_STARTED, () => onGenerationStarted());
+
+        // Listen only to CHARACTER_MESSAGE_RENDERED which fires AFTER message is generated
+        // This is when we generate and cache the memo for that message
         eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => onCharacterMessage('CHARACTER_MESSAGE_RENDERED'));
 
         // Listen to MESSAGE_SWIPED to update prompts when navigating between swipes
